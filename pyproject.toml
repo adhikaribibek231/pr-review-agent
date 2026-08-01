@@ -1,0 +1,7 @@
+[project]
+name = "pr-review-agent"
+version = "0.1.0"
+description = "An AI agent that automatically reviews GitHub pull requests: it retrieves relevant codebase context, uses an LLM to detect bugs, security issues, and convention violations, validates each finding against the diff to eliminate hallucinations, and posts a structured review as a GitHub Action."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
