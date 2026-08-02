@@ -1,10 +1,167 @@
-__pycache__/
-*.pyc
+# ============================================================
+# Secrets and local environment variables
+# ============================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# ============================================================
+# Python virtual environments
+# ============================================================
 .venv/
 venv/
-.env
+env/
+ENV/
+.python-version
+
+# ============================================================
+# Python bytecode and cache files
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ============================================================
+# Python packaging and build output
+# ============================================================
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# ============================================================
+# Testing and code coverage
+# ============================================================
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
 .coverage
+.coverage.*
+coverage.xml
+coverage.json
 htmlcov/
+.tox/
+.nox/
+hypothesis/
+.junit/
+test-results/
+
+# ============================================================
+# Type checking, linting, and formatting caches
+# ============================================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+.cache/
+
+# ============================================================
+# Jupyter notebooks
+# ============================================================
+.ipynb_checkpoints/
+
+# ============================================================
+# Logs and runtime files
+# ============================================================
+*.log
+logs/
+*.pid
+*.pid.lock
+*.seed
+*.out
+*.err
+
+# ============================================================
+# Local databases
+# ============================================================
+*.db
+*.sqlite
+*.sqlite3
+
+# ============================================================
+# IDE and editor files
+# ============================================================
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# PyCharm / IntelliJ
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+*.swn
+*~
+
+# Emacs
+\#*\#
+.#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ============================================================
+# Operating-system files
+# ============================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.directory
+.Trash-*
+
+# ============================================================
+# Temporary files
+# ============================================================
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# ============================================================
+# Application-specific generated output
+# ============================================================
+output/
+outputs/
+reports/
+artifacts/
+generated/
