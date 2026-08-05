@@ -20,7 +20,7 @@ def main() -> None:
     except ValueError as exc:
         raise SystemExit("PR number must be an integer") from exc
 
-    load_dotenv()
+    _ = load_dotenv()
 
     token = os.getenv("GITHUB_TOKEN")
     if not token:
