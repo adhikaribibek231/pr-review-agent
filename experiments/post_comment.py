@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from github import Auth, Github
 from github.GithubException import GithubException
 
+from pr_agent.github_client import fetch_changed_files, fetch_pull_request, get_github_client
+
 
 ISSUE_COMMENT_BODY: str = """
 ## PR Review Agent
@@ -48,12 +50,10 @@ def main() -> int:
         print("Error: PR_NUMBER must be an integer.", file=sys.stderr)
         return 1
 
-    github = Github(auth=Auth.Token(token))
+    github = get_github_client(token=token)
 
     try:
-        repository = github.get_repo(repository_name)
-        pull_request = repository.get_pull(pr_number)
-
+        pull_request = fetch_pull_request(github=github, repository_name=repository_name,pr_number=pr_number)
         issue_comment = pull_request.create_issue_comment(
             ISSUE_COMMENT_BODY,
         )

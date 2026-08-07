@@ -2,13 +2,11 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from github import Auth, Github
 from github.GithubException import GithubException
-from github.PullRequest import ReviewComment
 
 from pr_agent.diff_parser import DiffHunk, is_noise_file, parse_hunks
+from pr_agent.github_client import fetch_changed_files, fetch_pull_request, get_github_client, post_review
 from pr_agent.models import Finding
-from pr_agent.renderer import render_inline_comment
 from pr_agent.validator import validate_findings
 
 
@@ -41,12 +39,11 @@ def main() -> int:
         print("Error: PR_NUMBER must be an integer.", file=sys.stderr)
         return 1
 
-    github = Github(auth=Auth.Token(token))
+    github = get_github_client(token=token)
 
     try:
-        repository = github.get_repo(repository_name)
-        pull_request = repository.get_pull(pr_number)
-
+        pull_request = fetch_pull_request(github=github, repository_name=repository_name, pr_number=pr_number)
+        changed_files = fetch_changed_files(pull_request=pull_request)
         print(f"PR #{pull_request.number}: {pull_request.title}")
         print(f"State: {pull_request.state}")
         print(f"Base branch: {pull_request.base.ref}")
@@ -54,8 +51,7 @@ def main() -> int:
         print()
 
         all_hunks: list[DiffHunk] = []
-
-        for changed_file in pull_request.get_files():
+        for changed_file in changed_files:
             if is_noise_file(changed_file.filename):
                 print(f"Skipping noise file: {changed_file.filename}")
                 continue
@@ -119,46 +115,7 @@ def main() -> int:
         print("\nValidation passed.")
 
         if should_post and validated_findings:
-            head_commit = repository.get_commit(pull_request.head.sha)
-
-            # ------------------------------------------------------------
-            # Approach 1: post each finding as an individual inline comment
-            # ------------------------------------------------------------
-            #
-            # for finding in validated_findings:
-            #     comment = pull_request.create_review_comment(
-            #         body=render_inline_comment(finding),
-            #         commit=head_commit,
-            #         path=finding.filename,
-            #         line=finding.line,
-            #         side="RIGHT",
-            #     )
-            #
-            #     print(f"Posted comment id: {comment.id}")
-            #     print(f"Comment URL: {comment.html_url}")
-
-            # ------------------------------------------------------------
-            # Approach 2: submit one formal review containing all comments
-            # ------------------------------------------------------------
-
-            comments: list[ReviewComment] = [
-                ReviewComment(
-                    path=finding.filename,
-                    line=finding.line,
-                    side="RIGHT",
-                    body=render_inline_comment(finding),
-                )
-                for finding in validated_findings
-            ]
-
-            review = pull_request.create_review(
-                commit=head_commit,
-                body=f"Automated review found {len(comments)} issue(s).",
-                event="COMMENT",
-                comments=comments,
-            )
-
-            print(f"\nPosted review id: {review.id}")
+            post_review(pull_request=pull_request, findings=validated_findings)
 
     except GithubException as exc:
         print(
