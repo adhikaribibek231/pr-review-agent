@@ -4,8 +4,9 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from github import Auth, Github
 from github.GithubException import GithubException
+
+from pr_agent.github_client import fetch_changed_files, fetch_pull_request, get_github_client
 
 
 def main() -> int:
@@ -31,19 +32,18 @@ def main() -> int:
         print("Error: PR_NUMBER must be an integer.", file=sys.stderr)
         return 1
 
-    github = Github(auth=Auth.Token(token))
+    github = get_github_client(token=token)
 
     try:
-        repository = github.get_repo(repository_name)
-        pull_request = repository.get_pull(pr_number)
-
+        pull_request = fetch_pull_request(github=github, repository_name=repository_name,pr_number=pr_number)
+        changed_files = fetch_changed_files(pull_request=pull_request)
         print(f"PR #{pull_request.number}: {pull_request.title}")
         print(f"State: {pull_request.state}")
         print(f"Base branch: {pull_request.base.ref}")
         print(f"Source branch: {pull_request.head.ref}")
         print()
 
-        for changed_file in pull_request.get_files():
+        for changed_file in changed_files:
             print("=" * 80)
             print(f"File: {changed_file.filename}")
             print(f"Status: {changed_file.status}")

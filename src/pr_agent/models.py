@@ -10,3 +10,10 @@ class Finding:
     category:str
     message:str
 
+@dataclass(frozen=True)
+class ChangedFile:
+    filename: str
+    status: str
+    additions: int
+    deletions: int
+    patch: str | None
