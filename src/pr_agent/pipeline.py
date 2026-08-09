@@ -46,17 +46,29 @@ def generate_fake_findings(hunks:list[DiffHunk])->list[Finding]:
     logging.info(f"Generated {len(findings)} findings.")
     return findings
 
+def aggregate_findings(findings: list[Finding])->list[Finding]:
+    severity_rank = {
+            'error':0,
+            'warning':1,
+            'info':2
+            }
+    sorted_findings = sorted(findings, key=lambda x: (x.filename, x.line,severity_rank.get(x.severity,999)))
+    return sorted_findings
+
+
+
 def run_review(github:Github, repository_name:str, pr_number:int,post:bool)->list[Finding]:
-    logging.info(f"Fetching PR #1")
+    logging.info(f"Fetching PR #{pr_number}")
     pull_request = fetch_pull_request(github=github, repository_name=repository_name, pr_number=pr_number)
     changed_files = fetch_changed_files(pull_request=pull_request)
     logging.info(f"Fetched {len(changed_files)} changed files")
     hunks = build_hunks(changed_files=changed_files)
     findings = generate_fake_findings(hunks=hunks)
     validated_findings = validate_findings(findings = findings, hunks=hunks)
-    logging.info(f"Validated {len(validated_findings)}/{len(findings)}")
-    if post and validated_findings:
-        logging.info(f"Posting {len(validated_findings)} finding")
-        post_review(pull_request=pull_request,findings=validated_findings)
+    aggregated_findings = aggregate_findings(findings=validated_findings)
+    logging.info(f"Validated {len(aggregated_findings)}/{len(findings)}")
+    if post and aggregated_findings:
+        logging.info(f"Posting {len(aggregated_findings)} findings")
+        post_review(pull_request=pull_request,findings=aggregated_findings)
         logging.info("Review Posted successfully")
-    return validated_findings
+    return aggregated_findings
