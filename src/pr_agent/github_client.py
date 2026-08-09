@@ -2,12 +2,10 @@ from github import Auth, Github
 from github.PullRequest import PullRequest, ReviewComment
 from pr_agent.models import ChangedFile, Finding
 from pr_agent.renderer import render_inline_comment
-import logging
 def get_github_client(token:str)->Github:
     return Github(auth=Auth.Token(token))
 
 def fetch_pull_request(github:Github, repository_name:str, pr_number:int)->PullRequest:
-    logging.info(f"Fetching PR #{pr_number}")
     repository = github.get_repo(repository_name)
     return repository.get_pull(pr_number)
 

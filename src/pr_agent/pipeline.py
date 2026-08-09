@@ -1,6 +1,7 @@
 
 import logging
 
+logging.basicConfig(level=logging.INFO, force=True)
 from github import Github
 
 from pr_agent.diff_parser import DiffHunk, is_noise_file, parse_hunks

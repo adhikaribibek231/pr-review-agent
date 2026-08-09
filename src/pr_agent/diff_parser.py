@@ -1,7 +1,7 @@
 import logging
 import re
 from dataclasses import dataclass
-
+logging.basicConfig(level=logging.INFO, force=True)
 HUNK_HEADER_PATTERN = re.compile(
     r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? "
     r"\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@"
