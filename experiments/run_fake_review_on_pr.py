@@ -20,7 +20,7 @@ def main() -> int:
         print("Error: optional argument must be --post", file=sys.stderr)
         return 1
 
-    should_post = len(sys.argv) == 4
+    post_requested = len(sys.argv) == 4
 
     _ = load_dotenv()
 
@@ -40,15 +40,11 @@ def main() -> int:
     github = get_github_client(token=token)
 
     try:
-        validated_findings = run_review(github=github,repository_name=repository_name, pr_number=pr_number,post=should_post)
-        assert len(validated_findings) ==1
-        assert validated_findings[0].line ==36
+        findings= run_review(github=github,repository_name=repository_name, pr_number=pr_number,post_requested=post_requested)
+        assert len(findings) ==1
+        assert findings[0].line ==36
         print("Review completed.")
-        print(f"Validated findings: {len(validated_findings)}")
-        if should_post:
-            print("Review posted to Github")
-        else:
-            print("Dry run -- Nothing posted")
+        print(f"Validated findings: {len(findings)}")
 
     except GithubException as exc:
         print(

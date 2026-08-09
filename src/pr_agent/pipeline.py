@@ -55,9 +55,10 @@ def aggregate_findings(findings: list[Finding])->list[Finding]:
     sorted_findings = sorted(findings, key=lambda x: (x.filename, x.line,severity_rank.get(x.severity,999)))
     return sorted_findings
 
+def triage_findings(findings:list[Finding])->bool:
+    return bool(findings)
 
-
-def run_review(github:Github, repository_name:str, pr_number:int,post:bool)->list[Finding]:
+def run_review(github:Github, repository_name:str, pr_number:int,post_requested:bool)->list[Finding]:
     logging.info(f"Fetching PR #{pr_number}")
     pull_request = fetch_pull_request(github=github, repository_name=repository_name, pr_number=pr_number)
     changed_files = fetch_changed_files(pull_request=pull_request)
@@ -67,7 +68,8 @@ def run_review(github:Github, repository_name:str, pr_number:int,post:bool)->lis
     validated_findings = validate_findings(findings = findings, hunks=hunks)
     aggregated_findings = aggregate_findings(findings=validated_findings)
     logging.info(f"Validated {len(aggregated_findings)}/{len(findings)}")
-    if post and aggregated_findings:
+    should_post = triage_findings(aggregated_findings)
+    if post_requested and should_post:
         logging.info(f"Posting {len(aggregated_findings)} findings")
         post_review(pull_request=pull_request,findings=aggregated_findings)
         logging.info("Review Posted successfully")
