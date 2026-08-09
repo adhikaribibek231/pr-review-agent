@@ -1,3 +1,4 @@
+import logging
 import re
 from dataclasses import dataclass
 
@@ -93,6 +94,7 @@ def parse_hunks(filename:str, patch:str | None)->list[DiffHunk]:
                     deleted_lines=deleted_lines,
                     )
                 )
+    logging.info(f"Parsed {len(parsed_hunks)} hunks")
     return parsed_hunks
 
 def is_noise_file(filename:str)->bool:
