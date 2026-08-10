@@ -17,3 +17,11 @@ class ChangedFile:
     additions: int
     deletions: int
     patch: str | None
+
+@dataclass(frozen=True)
+class RetrievedContext:
+    filename: str
+    start_line:int
+    end_line:int
+    content: str
+    score: float
