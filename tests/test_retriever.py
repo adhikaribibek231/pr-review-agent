@@ -15,15 +15,15 @@ def test_discovers_only_repository_python_files_in_sorted_order(
     main_file = src / "main.py"
     utils_file = package / "utils.py"
     # Create files in reverse lexical order so the assertion also checks sorting.
-    utils_file.write_text("def foo(): pass\n", encoding="utf-8")
-    main_file.write_text("print('hello')\n", encoding="utf-8")
+    _=utils_file.write_text("def foo(): pass\n", encoding="utf-8")
+    _=main_file.write_text("print('hello')\n", encoding="utf-8")
 
     readme = tmp_path / "README.md"
-    readme.write_text("# Project\n", encoding="utf-8")
+    _=readme.write_text("# Project\n", encoding="utf-8")
 
     ignored_file = tmp_path / ".venv" / "dependency.py"
     ignored_file.parent.mkdir()
-    ignored_file.write_text("def dependency(): pass\n", encoding="utf-8")
+    _=ignored_file.write_text("def dependency(): pass\n", encoding="utf-8")
 
     result = discover_python_files(tmp_path)
 
