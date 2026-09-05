@@ -68,7 +68,7 @@ def parse_changed_lines(hunk_text:str)-> tuple[frozenset[int],frozenset[int]]:
         elif line.startswith("-"):
             deleted_lines.add(old_line_cursor)
             old_line_cursor+=1
-        elif line.startswith(" "):
+        elif line.startswith(" ") or line=="":
             old_line_cursor+=1
             new_line_cursor += 1
         else:

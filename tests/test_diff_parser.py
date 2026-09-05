@@ -157,3 +157,11 @@ def test_parse_real_pr_patch() -> None:
 def test_is_noise_file(filename: str, expected: bool) -> None:
     assert is_noise_file(filename) is expected
 
+
+def test_blank_context_line_without_leading_space() -> None:
+    hunk = "@@ -1,3 +1,4 @@\n ctx\n\n+new"
+
+    added_lines, deleted_lines = parse_changed_lines(hunk)
+
+    assert added_lines == frozenset({3})
+    assert deleted_lines == frozenset()
