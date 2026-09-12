@@ -20,7 +20,7 @@ EXCLUDED_DIRS = {
     "node_modules",
 }
 
-MAX_CHUNK_LINES = 100
+MAX_CHUNK_LINES = 40
 CHUNK_OVERLAP_LINES = 10
 
 def _start_line(node: ast.stmt) -> int:
