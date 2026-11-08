@@ -165,3 +165,43 @@ def test_blank_context_line_without_leading_space() -> None:
 
     assert added_lines == frozenset({3})
     assert deleted_lines == frozenset()
+
+
+# ---- where a finding about a pure removal may be attached ----------------------------------------------------------------------------
+
+
+def _anchors(patch: str) -> set[int]:
+    from pr_agent.diff_parser import deletion_anchor_lines
+
+    return set(deletion_anchor_lines(parse_hunks("a.py", patch)[0]))
+
+
+def test_a_deletion_between_context_lines_anchors_to_both_neighbours() -> None:
+    assert _anchors("@@ -1,5 +1,3 @@\n keep1\n keep2\n-gone1\n-gone2\n keep3\n keep4") == {2, 3}
+
+
+def test_a_deletion_at_the_end_anchors_to_the_line_above_only() -> None:
+    assert _anchors("@@ -1,3 +1,1 @@\n keep\n-gone1\n-gone2") == {1}
+
+
+def test_a_deletion_at_the_start_anchors_to_the_line_below_only() -> None:
+    assert _anchors("@@ -1,3 +1,1 @@\n-gone1\n-gone2\n keep") == {1}
+
+
+def test_two_separate_deletions_each_get_their_own_anchors() -> None:
+    assert _anchors("@@ -1,7 +1,5 @@\n a\n-x\n b\n c\n-y\n d\n e") == {1, 2, 3, 4}
+
+
+def test_a_hunk_that_adds_anything_has_no_deletion_anchors() -> None:
+    assert _anchors("@@ -1,3 +1,3 @@\n keep\n-old\n+new\n tail") == set()
+
+
+def test_a_blank_line_stripped_of_its_space_still_counts_as_context() -> None:
+    assert _anchors("@@ -1,4 +1,3 @@\n a\n-gone\n\n tail") == {1, 2}
+
+
+def test_a_hunk_with_no_patch_text_has_no_anchors() -> None:
+    from pr_agent.diff_parser import deletion_anchor_lines
+
+    empty = DiffHunk(filename="a.py", patch="", added_lines=frozenset(), deleted_lines=frozenset({3}))
+    assert deletion_anchor_lines(empty) == frozenset()

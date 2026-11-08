@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from pr_agent.diff_parser import DiffHunk
+from pr_agent.diff_parser import DiffHunk, deletion_anchor_lines
 from pr_agent.models import Finding
 
 
@@ -28,8 +28,12 @@ def check_findings(findings: list[Finding], hunks: list[DiffHunk]) -> Validation
     This is a deliberate precision-over-recall choice: GitHub also accepts
     comments on unchanged context lines inside a hunk, but we don't, because a
     comment on code the author didn't touch is far more likely to be noise.
+    The one exception is a hunk that only deletes: it has no added line at all, so
+    the surviving lines beside the removal are accepted (see `deletion_anchor_lines`).
     """
-    valid_locations = {(hunk.filename, line) for hunk in hunks for line in hunk.added_lines}
+    valid_locations = {
+        (hunk.filename, line) for hunk in hunks for line in (*hunk.added_lines, *deletion_anchor_lines(hunk))
+    }
     kept: list[Finding] = []
     dropped: list[Finding] = []
     for finding in findings:

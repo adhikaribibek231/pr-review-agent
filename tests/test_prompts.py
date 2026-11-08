@@ -228,3 +228,14 @@ def test_the_prompt_says_other_diffs_in_the_same_file_may_use_a_name() -> None:
 def test_the_prompt_forbids_hedged_findings_about_code_the_model_cannot_see() -> None:
     system = build_review_prompt(item_of()).system
     assert "hedged findings" in system and "that is speculation" in system
+
+
+def test_a_removal_only_diff_is_marked_and_the_prompt_says_where_to_cite() -> None:
+    removal = HunkContext(hunk_of("@@ -1,4 +1,2 @@\n keep\n-gone1\n-gone2\n tail"), ())
+    assert '<diff file="src/app.py" kind="removal-only">' in build_review_prompt(removal).user
+    system = build_review_prompt(removal).system
+    assert "removal-only" in system and "directly above or below" in system
+
+
+def test_an_ordinary_diff_is_not_marked_removal_only() -> None:
+    assert "removal-only" not in build_review_prompt(item_of()).user

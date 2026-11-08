@@ -9,7 +9,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from pr_agent.diff_parser import DiffHunk, parse_hunk_header
+from pr_agent.diff_parser import DiffHunk, deletion_anchor_lines, parse_hunk_header
 from pr_agent.models import HunkContext, RetrievedContext, ReviewOutput
 
 # Retrieved context is best-first. When it doesn't fit, whole chunks are dropped
@@ -91,8 +91,11 @@ violations of this repository's conventions, and clear style problems.
 Rules:
 1. Every finding must point at a line a diff ADDED: a line marked "+" in a <diff> \
 block. Use the line number printed beside it and the file named by that block. \
-Never cite context lines, deleted lines, or lines from <context>. Several <diff> \
-blocks may be separate changes to the same file shown together: a name that looks \
+Never cite context lines, deleted lines, or lines from <context>. The one exception: \
+a <diff> block marked removal-only has no "+" lines because the change only deletes \
+code; a finding about the removal (for example code elsewhere that still uses what was \
+deleted) may cite the numbered context line directly above or below the removed lines. \
+Several <diff> blocks may be separate changes to the same file shown together: a name that looks \
 unused, or a value that looks unset, may be used or set in another block.
 2. <context> is reference material from elsewhere in the repository. Most blocks \
 carry a `reason` saying why they are shown. A block that "calls", "instantiates", \
@@ -142,6 +145,10 @@ def _compact_schema() -> str:
     return json.dumps(strip_titles(ReviewOutput.model_json_schema()), separators=(",", ":"))
 
 
+def _removal_only(hunk: DiffHunk) -> str:
+    return ' kind="removal-only"' if deletion_anchor_lines(hunk) else ""
+
+
 def merge_contexts(items: Sequence[HunkContext]) -> tuple[RetrievedContext, ...]:
     """One context list for a batch: de-duplicated and interleaved by rank.
 
@@ -177,7 +184,7 @@ def build_review_prompt(items: HunkContext | Sequence[HunkContext], stricter: bo
     system = _SYSTEM.replace("{schema}", _compact_schema()) + (_STRICTER if stricter else "")
 
     parts = [
-        f'<diff file="{item.hunk.filename}">\n'
+        f'<diff file="{item.hunk.filename}"{_removal_only(item.hunk)}>\n'
         f"{_neutralize(render_hunk_with_line_numbers(item.hunk))}\n</diff>"
         for item in batch
     ]

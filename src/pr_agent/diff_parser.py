@@ -153,3 +153,32 @@ def deletions(hunk: DiffHunk) -> list[tuple[int, str]]:
         else:
             new_cursor += 1
     return found
+
+
+def deletion_anchor_lines(hunk: DiffHunk) -> frozenset[int]:
+    """Where a finding about a pure removal may be attached.
+
+    A hunk that only deletes has no added line, so the usual rule (a finding must sit on an
+    added line) would discard anything said about it, including "this PR removed a function
+    that report.py still imports". GitHub does accept comments on the unchanged context lines
+    inside a hunk, so for a deletion-only hunk the surviving lines directly above and below
+    the removed block are valid anchors. For a hunk that adds anything, the strict rule stands
+    (an empty set): a comment on a line the author did not touch is far more likely to be noise.
+    """
+    lines = hunk.patch.splitlines()
+    if hunk.added_lines or not lines:
+        return frozenset()
+    _, _, new_cursor, _ = parse_hunk_header(lines[0])
+    context_lines: set[int] = set()
+    positions: list[int] = []  # the last surviving line above each deleted line
+    for line in lines[1:]:
+        if line.startswith("\\"):
+            continue
+        if line.startswith("-"):
+            positions.append(new_cursor - 1)
+        else:
+            context_lines.add(new_cursor)
+            new_cursor += 1
+    anchors = {above for above in positions if above in context_lines}
+    anchors |= {above + 1 for above in positions if above + 1 in context_lines}
+    return frozenset(anchors)

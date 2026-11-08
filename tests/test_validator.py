@@ -272,3 +272,40 @@ def test_validate_findings_is_the_kept_half_of_check_findings() -> None:
 
     findings, hunks = _report_fixture()
     assert validate_findings(findings, hunks) == list(check_findings(findings, hunks).kept)
+
+
+# ---- findings about a pure removal ----------------------------------------------------------------------------------------------------
+
+
+def _removal_case():
+    from pr_agent.diff_parser import parse_hunks
+    from pr_agent.validator import check_findings
+
+    hunks = parse_hunks("utils.py", "@@ -1,6 +1,3 @@\n def keep(x):\n     return x\n \n-def legacy(items):\n-    return sum(items)\n-\n def other(x):")
+    make = lambda filename, line: Finding(  # noqa: E731
+        filename=filename, line=line, severity=Severity.CRITICAL, category=Category.BUG, message="m")
+    return hunks, make, check_findings
+
+
+def test_a_finding_beside_a_pure_removal_is_grounded_on_the_adjacent_context_line() -> None:
+    hunks, make, check = _removal_case()
+    assert [f.line for f in check([make("utils.py", 3), make("utils.py", 4)], hunks).kept] == [3, 4]
+
+
+def test_context_lines_far_from_the_removal_are_still_rejected() -> None:
+    hunks, make, check = _removal_case()
+    assert check([make("utils.py", 1)], hunks).kept == ()
+
+
+def test_the_removal_exception_does_not_apply_to_other_files() -> None:
+    hunks, make, check = _removal_case()
+    assert check([make("other.py", 3)], hunks).kept == ()
+
+
+def test_a_hunk_with_additions_still_rejects_context_lines() -> None:
+    from pr_agent.diff_parser import parse_hunks
+    from pr_agent.validator import check_findings
+
+    hunks = parse_hunks("a.py", "@@ -1,3 +1,3 @@\n keep\n-old\n+new\n tail")
+    context_line = Finding(filename="a.py", line=1, severity=Severity.INFO, category=Category.STYLE, message="m")
+    assert check_findings([context_line], hunks).kept == ()
