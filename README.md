@@ -196,36 +196,51 @@ Working and tested (`pytest`):
 - `Severity`/`Category` enums and a Pydantic `Finding`/`ReviewOutput`: LLM output is validated at the boundary, with the JSON schema generated from the same models
 - `LLMReviewer`: builds the prompt (numbered diff lines, retrieved context, untrusted-data rules), validates the reply, retries once with the error attached; talks to the model only through the `LLMClient` protocol
 - A LangGraph agent (`pr_agent.graph`) with the triage-skip and validate-retry decisions, a bounded retry governor, and SQLite checkpointing that resumes after a crash and makes re-running a commit a no-op. See [docs/architecture.md](docs/architecture.md)
+- A **verification pass**: each surviving finding is re-checked against the code it depends on (the enclosing function and the bodies of what it calls) and only confirmed ones are reported
+- A command line (`python -m pr_agent review`) that reads a PR, snapshots its head code safely, runs the graph, and posts a summary plus inline comments that degrade gracefully and never duplicate
 - `run_review` accepts an injectable `reviewer` and an optional `index`, so any reviewer receives each hunk together with its retrieved context
 
-Not yet built: a real LLM client (a scripted `FakeLLMClient` is used; see `experiments/review_with_fake_llm.py`), reranking, a summary comment and idempotent posting, GitHub Actions, and the planted-bug evaluation.
+Not yet built: the GitHub Action, reranking, and a way to review non-Python code with impact analysis.
 
 Measure retrieval changes with `python experiments/retrieval_eval.py -v` rather than by eye.
 
 ## Running locally
 
-Requirements:
-
-- Python 3.13 or newer
-
-Create and activate a virtual environment, then install the project:
+Requirements: Python 3.13 or newer, and an API key for at least one LLM provider
+(several have free tiers; see `.env.example`).
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+uv sync                        # or: python -m venv .venv && pip install -e .
+cp .env.example .env           # then fill in at least one provider's key
+pytest                         # 500+ offline tests, no network or keys needed
 ```
 
-Run the current test suite:
+Review a pull request. The default is a **dry run**: it prints the findings and posts nothing.
 
 ```bash
-pytest
+python -m pr_agent review --repo owner/name --pr 7              # dry run
+python -m pr_agent review --repo owner/name --pr 7 --post       # also post the review
+python -m pr_agent review --repo owner/name --commit abc1234    # review a past commit, read-only
 ```
 
-The present executable entry point is only a placeholder:
+Useful options: `--fail-on warning` (exit 1 for CI), `--json`, `--no-verify` (skip the second
+check on each finding), `--no-retrieval` (diff only: faster and cheaper), `--root DIR` (index a
+local checkout instead of downloading the PR's head), `--checkpoint FILE` (resume after a crash;
+re-running the same commit does nothing), `--provider NAME --model ID`, `-v`.
+
+Reading public repositories needs no GitHub token; posting needs `GITHUB_TOKEN`. A rejected token
+falls back to anonymous reading for a dry run. Per-run spending caps (`LLM_MAX_CALLS_PER_RUN`,
+`LLM_MAX_TOKENS_PER_RUN`) and the provider choice (`LLM_PROVIDER`) are explained in `.env.example`.
+
+Only source code is reviewed (documentation, data and binaries are skipped), and only Groq has
+been tested against a live account.
+
+Live experiments (they call a real model; they say what they will cost before spending it):
 
 ```bash
-python main.py
+python experiments/llm_eval.py --dry-run            # forecast the cost of the planted-bug suite
+python experiments/llm_eval.py --verify             # run it, reporting results before and after verification
+python experiments/retrieval_eval.py -v             # retrieval quality, offline apart from the local embedding model
 ```
 
 ## Future improvements

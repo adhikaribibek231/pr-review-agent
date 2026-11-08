@@ -13,6 +13,7 @@ graph TD;
 	retrieve(retrieve)
 	review(review)
 	validate(validate)
+	verify(verify)
 	aggregate(aggregate)
 	post_review(post_review)
 	__end__([end])
@@ -24,7 +25,8 @@ graph TD;
 	retrieve --> review;
 	review --> validate;
 	validate -. retry .-> review;
-	validate -. done .-> aggregate;
+	validate -. done .-> verify;
+	verify --> aggregate;
 	aggregate --> post_review;
 	post_review --> __end__;
 ```
@@ -41,7 +43,8 @@ Regenerate from the code with `build_review_graph(...).get_graph().draw_mermaid(
 | `retrieve` | `gather_context` | `reviewable` | `items` |
 | `review` | `ReviewStep` (an `LLMReviewer`) | `items`, `attempts`, `dropped` | `candidates`, `attempts` |
 | `validate` | `check_findings` | `candidates`, `hunks` | `validated`, `dropped` |
-| `aggregate` | `aggregate_findings` | `validated` | `findings` |
+| `verify` | `Verifier` (a second, narrow model check; skipped if none) | `validated` | `verified`, `refuted` |
+| `aggregate` | `aggregate_findings` | `verified` | `findings` |
 | `post_review` | `post_review` | `findings` | `posted` |
 
 ## The two decisions
@@ -86,6 +89,42 @@ were found). The prompt tells the model to report a broken caller **on the chang
 because the validator only accepts findings on added lines. The full scenario matrix, with what
 is covered and what is not, is in [retrieval_scenarios.md](retrieval_scenarios.md).
 
+## What running on real code taught us
+
+The planted-bug suite showed no false positives. The first real commit (9 hunks of an actual
+repository) produced **nine**, all wrong. Each cause got its own fix:
+
+| Cause | Fix |
+| --- | --- |
+| Markdown was reviewed as code; the model invented a "120-character limit" | only source files are reviewed |
+| A variable one hunk adds looked "unused" because another hunk uses it | all hunks of a file are reviewed in one call (also one copy of the instructions per file instead of per hunk) |
+| "The directory is never created", but the callee creates it at the end of a 140-line function the model saw only the top of | the **verify** step re-reads the enclosing function and the callees' bodies (head and tail of long ones) and refutes claims the code answers; the prompt also forbids hedged claims about unseen code |
+| `if __name__ == "__main__": main()` reported as a dependent of `main` | script-level calls in the changed file are ignored for body changes |
+| A change that only deletes code could not be reported at all (findings must sit on an added line, and there is none) | for a deletion-only hunk, the context lines beside the removal are valid anchors; everywhere else the strict rule stands |
+| The first version of the verifier rejected true findings about untouched callers ("report.py is not shown") | it is given the dependents retrieval found; the same helper feeds the graph and the evaluation |
+
+Same commit, before and after: 9 findings and 9 model calls (22k tokens, 8 minutes) became 3
+calls (7.7k tokens, 2 minutes), and the verifier refuted the two remaining false claims when
+given them directly. A real bug (a wrong type annotation in PR #1) survives verification.
+
+### Measured on the hard suite
+
+`experiments/llm_eval.py --verify` on 18 planted cases (12 bugs in new code or in untouched callers, 2 older
+callee-dependent bugs, 4 clean changes), `openai/gpt-oss-120b` at medium effort on Groq's free tier. The numbers come
+from three runs because fixes landed between them, and the 8 original cases were not re-run on the final prompt:
+
+| Run | Bugs found before verification | After | False positives before / after | Clean cases flagged |
+| --- | --- | --- | --- | --- |
+| 1: 18 cases, verifier not yet given dependents | 13 / 14 | 12 / 14 | 1 / 0 | 0 / 4 |
+| 2: 4 impact cases, same harness bug | 4 / 4 | 1 / 4 | 1 / 0 | n/a |
+| 3: 3 impact cases, final logic | 3 / 3 | 3 / 3 | 1 / 0 | n/a |
+
+Run 2 is the instructive one: the verifier rejected three true findings because the harness did not give it the
+dependents, which is what the fix above addresses. With the final logic every bug case that was found before
+verification was still found after it, the one misplaced finding was removed, and no clean case was flagged. The
+costs were about 2.1k tokens per reviewed file and about 0.9k per verified finding. Treat this as evidence the
+mechanisms work, not as a quality rate: it is a small, synthetic, one-model sample.
+
 ## Where this deliberately differs from the field manual
 
 1. **Reducer.** The manual puts `operator.add` on `findings` and has `validate` return the filtered
@@ -100,6 +139,6 @@ is covered and what is not, is in [retrieval_scenarios.md](retrieval_scenarios.m
 
 ## Not built yet
 
-A real `LLMClient` (Groq), reranking between `retrieve` and `review`, a summary comment and
-idempotent inline posting (a crash *between* posting and checkpointing would post twice), config and
-CLI, the planted-bug evaluation, and the GitHub Action.
+The GitHub Action, reranking between `retrieve` and `review`, and impact analysis for languages
+other than Python. A crash *between* posting and checkpointing could still post once more; the
+hidden per-commit marker in the review body catches that on the next run.
