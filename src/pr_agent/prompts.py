@@ -14,7 +14,7 @@ from pr_agent.models import HunkContext, RetrievedContext, ReviewOutput
 # Retrieved context is best-first. When it doesn't fit, whole chunks are dropped
 # from the tail; a half-cut function is worse than a missing one. Characters are
 # a rough proxy (~4 per token) because we don't know the target model's tokenizer.
-MAX_CONTEXT_CHARS = 12_000
+MAX_CONTEXT_CHARS = 6_000  # ~1.7k tokens; sized for a free-tier request limit of 8k tokens per minute
 
 
 @dataclass(frozen=True)
@@ -119,14 +119,25 @@ cite ONLY a line number printed next to a "+" line. If you are not certain of th
 exact line, leave the finding out. An empty list is better than a wrong line."""
 
 
-def build_review_prompt(item: HunkContext, stricter: bool = False) -> Prompt:
+def _compact_schema() -> str:
+    """The reply schema as compact JSON without `title` noise: every token is quota."""
+    def strip_titles(node: object) -> object:
+        if isinstance(node, dict):
+            return {k: strip_titles(v) for k, v in node.items() if k != "title"}
+        if isinstance(node, list):
+            return [strip_titles(v) for v in node]
+        return node
+    return json.dumps(strip_titles(ReviewOutput.model_json_schema()), separators=(",", ":"))
+
+
+def build_review_prompt(item: HunkContext, stricter: bool = False,
+                        max_context_chars: int = MAX_CONTEXT_CHARS) -> Prompt:
     """System + user prompt for reviewing one hunk.
 
     `stricter` is the variant used when validation found the first attempt cited
     lines outside the diff (the retry edge in the planned LangGraph).
     """
-    schema = json.dumps(ReviewOutput.model_json_schema(), indent=2)
-    system = _SYSTEM.replace("{schema}", schema) + (_STRICTER if stricter else "")
+    system = _SYSTEM.replace("{schema}", _compact_schema()) + (_STRICTER if stricter else "")
 
     parts = [
         f'<diff file="{item.hunk.filename}">\n'
@@ -135,7 +146,7 @@ def build_review_prompt(item: HunkContext, stricter: bool = False) -> Prompt:
     if item.notes:
         notes = "\n".join(f"- {_neutralize(note)}" for note in item.notes)
         parts.append(f"<impact_notes>\n{notes}\n</impact_notes>")
-    context = render_context(item.context)
+    context = render_context(item.context, max_context_chars)
     if context:
         parts.append(context)
     else:

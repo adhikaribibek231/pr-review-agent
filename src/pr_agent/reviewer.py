@@ -13,9 +13,9 @@ import re
 
 from pydantic import ValidationError
 
-from pr_agent.llm import LLMClient
+from pr_agent.llm import LLMClient, PromptTooLargeError
 from pr_agent.models import Finding, HunkContext, ReviewOutput
-from pr_agent.prompts import build_review_prompt
+from pr_agent.prompts import MAX_CONTEXT_CHARS, Prompt, build_review_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -74,13 +74,15 @@ def _repair_request(original_user_prompt: str, bad_reply: str, error: Validation
 
 
 class LLMReviewer:
-    def __init__(self, client: LLMClient, max_attempts: int = 2) -> None:
+    def __init__(self, client: LLMClient, max_attempts: int = 2,
+                 max_context_chars: int = MAX_CONTEXT_CHARS) -> None:
         """`max_attempts=2` means one retry. The cap is a governor: a model that
         keeps returning garbage costs two calls per hunk, never an endless loop."""
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
         self._client = client
         self._max_attempts = max_attempts
+        self._max_context_chars = max_context_chars
 
     def __call__(self, items: list[HunkContext]) -> list[Finding]:
         return self.review(items)
@@ -99,7 +101,24 @@ class LLMReviewer:
         return findings
 
     def _review_hunk(self, item: HunkContext, stricter: bool) -> list[Finding]:
-        prompt = build_review_prompt(item, stricter=stricter)
+        # If the provider says the prompt is too large, retry with half the context, then a
+        # quarter, then none: a review with less context beats no review. This is separate
+        # from the invalid-reply retry below, which is about the model's answer.
+        budget = self._max_context_chars
+        while True:
+            prompt = build_review_prompt(item, stricter=stricter, max_context_chars=budget)
+            try:
+                return self._ask(item, prompt)
+            except PromptTooLargeError as error:
+                if budget == 0:
+                    logger.warning("Giving up on a hunk in %s: too large even without context (%s)",
+                                   item.hunk.filename, error)
+                    return []
+                budget = budget // 2 if budget >= 500 else 0
+                logger.warning("Prompt too large for %s; retrying with %d context characters",
+                               item.hunk.filename, budget)
+
+    def _ask(self, item: HunkContext, prompt: Prompt) -> list[Finding]:
         user = prompt.user
         for attempt in range(1, self._max_attempts + 1):
             raw = self._client.complete_json(system=prompt.system, user=user)

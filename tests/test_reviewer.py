@@ -3,7 +3,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from pr_agent.diff_parser import parse_hunks
-from pr_agent.llm import FakeLLMClient, findings_reply
+from pr_agent.llm import FakeLLMClient, PromptTooLargeError, findings_reply
 from pr_agent.models import Category, ChangedFile, Finding, HunkContext, Severity
 from pr_agent.pipeline import run_review
 from pr_agent.reviewer import (
@@ -188,3 +188,46 @@ def test_llm_reviewer_drops_into_run_review_and_grounding_still_applies() -> Non
         result = run_review(Mock(), "o/r", 1, False, reviewer=LLMReviewer(client))
 
     assert [f.line for f in result] == [1]
+
+
+# ---- a prompt too large for the provider ------------------------------------------------------------------
+
+
+class TooBigUnless:
+    """Rejects any prompt longer than `limit` characters, like a provider with a request cap."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit, self.sizes = limit, []
+
+    def complete_json(self, *, system: str, user: str) -> str:
+        self.sizes.append(len(user))
+        if len(user) > self.limit:
+            raise PromptTooLargeError("too big")
+        return findings_reply([finding(1)])
+
+
+def big_item() -> HunkContext:
+    from pr_agent.models import RetrievedContext
+
+    chunks = tuple(RetrievedContext(f"lib{i}.py", 1, 5, "x = 1\n" * 300, 0.5, "reason") for i in range(6))
+    return HunkContext(parse_hunks("app.py", PATCH)[0], chunks)
+
+
+def test_a_too_large_prompt_is_retried_with_less_context_and_still_reviewed() -> None:
+    client = TooBigUnless(limit=2500)
+    result = LLMReviewer(client)([big_item()])
+    assert [f.line for f in result] == [1]  # reviewed, with less context
+    assert client.sizes == sorted(client.sizes, reverse=True)  # each attempt was smaller
+    assert len(client.sizes) > 1
+
+
+def test_when_even_no_context_fits_the_hunk_is_skipped_not_crashed() -> None:
+    client = TooBigUnless(limit=10)
+    assert LLMReviewer(client)([big_item()]) == []
+    assert len(client.sizes) <= 8  # it gave up, rather than looping
+
+
+def test_a_prompt_that_fits_is_sent_once_with_all_its_context() -> None:
+    client = TooBigUnless(limit=1_000_000)
+    _ = LLMReviewer(client)([big_item()])
+    assert len(client.sizes) == 1
