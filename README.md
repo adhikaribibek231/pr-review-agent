@@ -188,15 +188,17 @@ An orchestrated graph makes it practical to share state between steps, skip low-
 Working and tested (`pytest`):
 
 - PR fetching, diff parsing and changed-line tracking, noise-file filtering
-- Deterministic grounding check (a finding must target an added line)
+- Deterministic grounding check (a finding must target an added line); the validator reports what it dropped, which drives the retry
+- Heuristic triage that skips hunks that cannot change behaviour (comments, imports, reformatting) without spending a model call
 - AST-based chunking, with a **token-budget guarantee**: no chunk is ever silently truncated by the embedding model
 - Semantic search (`pr_agent.search`): `build_index` once, `index.search(query)` many times
 - PR-aware retrieval: `retrieve_for_hunk` combines exact definition lookup for names the change uses with semantic search, and excludes the changed code itself
 - `Severity`/`Category` enums and a Pydantic `Finding`/`ReviewOutput`: LLM output is validated at the boundary, with the JSON schema generated from the same models
 - `LLMReviewer`: builds the prompt (numbered diff lines, retrieved context, untrusted-data rules), validates the reply, retries once with the error attached; talks to the model only through the `LLMClient` protocol
+- A LangGraph agent (`pr_agent.graph`) with the triage-skip and validate-retry decisions, a bounded retry governor, and SQLite checkpointing that resumes after a crash and makes re-running a commit a no-op. See [docs/architecture.md](docs/architecture.md)
 - `run_review` accepts an injectable `reviewer` and an optional `index`, so any reviewer receives each hunk together with its retrieved context
 
-Not yet built: a real LLM client (a scripted `FakeLLMClient` is used; see `experiments/review_with_fake_llm.py`), reranking, LangGraph orchestration, posting idempotency, GitHub Actions, and the planted-bug evaluation.
+Not yet built: a real LLM client (a scripted `FakeLLMClient` is used; see `experiments/review_with_fake_llm.py`), reranking, a summary comment and idempotent posting, GitHub Actions, and the planted-bug evaluation.
 
 Measure retrieval changes with `python experiments/retrieval_eval.py -v` rather than by eye.
 
