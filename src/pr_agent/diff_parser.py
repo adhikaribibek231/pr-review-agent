@@ -1,7 +1,9 @@
 import logging
 import re
 from dataclasses import dataclass
-logging.basicConfig(level=logging.INFO, force=True)
+
+logger = logging.getLogger(__name__)
+
 HUNK_HEADER_PATTERN = re.compile(
     r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? "
     r"\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@"
@@ -94,7 +96,7 @@ def parse_hunks(filename:str, patch:str | None)->list[DiffHunk]:
                     deleted_lines=deleted_lines,
                     )
                 )
-    logging.info(f"Parsed {len(parsed_hunks)} hunks")
+    logger.info("Parsed %d hunks", len(parsed_hunks))
     return parsed_hunks
 
 def is_noise_file(filename:str)->bool:
