@@ -14,12 +14,23 @@ Two deliberate choices:
   client, not in the reviewer.
 """
 
+import logging
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
 from pr_agent.models import Finding, ReviewOutput
+
+logger = logging.getLogger(__name__)
+
+
+class PromptTooLargeError(Exception):
+    """The request cannot fit the provider's per-request limit as it stands.
+
+    Raised before anything is sent. The reviewer answers it by shrinking the retrieved
+    context and trying again, rather than treating it as a failed review.
+    """
 
 
 class LLMClient(Protocol):
@@ -68,3 +79,55 @@ class FakeLLMClient:
             return self._default
         reply = self._replies.popleft()
         return reply(call) if callable(reply) else reply
+
+
+def is_retriable(error: Exception) -> bool:
+    """Is this failure the provider's (or the network's), so another provider may succeed?
+
+    Rate limits, timeouts, connection failures and 5xx are. Bad requests and auth
+    failures are not: they would fail the same way, and hiding them behind a fallback
+    would leave a broken configuration looking healthy. Duck-typed on `status_code`, so
+    this needs no SDK.
+    """
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int):
+        return status == 429 or status >= 500
+    name = type(error).__name__
+    return isinstance(error, (ConnectionError, TimeoutError)) or "Timeout" in name or "Connection" in name \
+        or name == "BudgetExceededError"
+
+
+class FallbackClient:
+    """Tries clients in order; a retriable failure moves on to the next.
+
+    This is how several free tiers add up: when the first provider is rate limited or
+    out of its daily quota, the next one answers. A non-retriable error (bad key, bad
+    request) propagates at once. If every provider fails, the last error is raised, or
+    PromptTooLargeError if that is what the providers said.
+    """
+
+    def __init__(self, clients: Sequence[LLMClient], names: Sequence[str] | None = None) -> None:
+        if not clients:
+            raise ValueError("FallbackClient needs at least one client")
+        self._clients = list(clients)
+        self._names = list(names) if names else [f"client{i}" for i in range(len(clients))]
+        self.last_used: str | None = None
+
+    def complete_json(self, *, system: str, user: str) -> str:
+        last_error: Exception | None = None
+        for client, name in zip(self._clients, self._names, strict=True):
+            try:
+                reply = client.complete_json(system=system, user=user)
+            except PromptTooLargeError as error:
+                logger.warning("%s: prompt too large (%s); trying the next provider", name, error)
+                last_error = error
+            except Exception as error:
+                if not is_retriable(error):
+                    raise
+                logger.warning("%s unavailable (%s: %s); trying the next provider", name, type(error).__name__, error)
+                last_error = error
+            else:
+                self.last_used = name
+                return reply
+        assert last_error is not None
+        raise last_error
