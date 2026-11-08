@@ -222,3 +222,53 @@ def test_deleted_only_line_is_not_valid_for_right_side_comment() -> None:
     )
 
     assert result == []
+
+
+# --------------------------------------------------------------------------
+# check_findings: the report the retry loop needs
+# --------------------------------------------------------------------------
+
+
+def _report_fixture() -> tuple[list[Finding], list[DiffHunk]]:
+    from pr_agent.diff_parser import parse_hunks
+
+    hunks = parse_hunks("a.py", "@@ -1,0 +1,2 @@\n+x = 1\n+y = 2")
+    make = lambda filename, line: Finding(  # noqa: E731
+        filename=filename, line=line, severity=Severity.WARNING, category=Category.BUG, message="m"
+    )
+    return [make("a.py", 1), make("a.py", 99), make("other.py", 1), make("a.py", 2)], hunks
+
+
+def test_check_findings_reports_kept_and_dropped_separately() -> None:
+    from pr_agent.validator import check_findings
+
+    findings, hunks = _report_fixture()
+    result = check_findings(findings, hunks)
+
+    assert [(f.filename, f.line) for f in result.kept] == [("a.py", 1), ("a.py", 2)]
+    assert [(f.filename, f.line) for f in result.dropped] == [("a.py", 99), ("other.py", 1)]
+    assert result.has_unsupported
+
+
+def test_nothing_dropped_means_no_unsupported_findings() -> None:
+    from pr_agent.validator import check_findings
+
+    findings, hunks = _report_fixture()
+    result = check_findings([findings[0]], hunks)
+    assert not result.has_unsupported
+    assert result.dropped == ()
+
+
+def test_kept_plus_dropped_always_accounts_for_every_finding() -> None:
+    from pr_agent.validator import check_findings
+
+    findings, hunks = _report_fixture()
+    result = check_findings(findings, hunks)
+    assert len(result.kept) + len(result.dropped) == len(findings)
+
+
+def test_validate_findings_is_the_kept_half_of_check_findings() -> None:
+    from pr_agent.validator import check_findings
+
+    findings, hunks = _report_fixture()
+    assert validate_findings(findings, hunks) == list(check_findings(findings, hunks).kept)
