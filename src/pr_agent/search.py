@@ -12,16 +12,18 @@ persistence, not speed; add one when you need the former.
 import logging
 import re
 from collections.abc import Callable, Collection
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
 
-from pr_agent.diff_parser import DiffHunk, parse_hunk_header
+from pr_agent.diff_parser import DiffHunk, changed_code, changed_new_lines
 from pr_agent.embedding import Embedder
+from pr_agent.impact import analyze_impact
 from pr_agent.models import RetrievedContext
+from pr_agent.symbols import SymbolIndex
 from pr_agent.retriever import (
     chunk_python_file,
     EXCLUDED_DIRS,
@@ -54,6 +56,26 @@ class CodeIndex:
     chunks: tuple[RetrievedContext, ...]
     embeddings: NDArray[np.float32]  # (len(chunks), dim), L2-normalised
     embedder: Embedder
+    symbols: SymbolIndex = field(default_factory=SymbolIndex)  # who defines and uses what
+
+    @cached_property
+    def _position(self) -> dict[tuple[str, int], int]:
+        return {(chunk.filename, chunk.start_line): i for i, chunk in enumerate(self.chunks)}
+
+    @cached_property
+    def _chunks_by_file(self) -> dict[str, list[int]]:
+        by_file: dict[str, list[int]] = {}
+        for i, chunk in enumerate(self.chunks):
+            by_file.setdefault(chunk.filename, []).append(i)
+        return by_file
+
+    def chunk_position_at(self, filename: str, line: int) -> int | None:
+        """Position of the chunk holding `line`; the narrowest one if windows overlap."""
+        covering = [i for i in self._chunks_by_file.get(filename, [])
+                    if self.chunks[i].start_line <= line <= self.chunks[i].end_line]
+        if not covering:
+            return None
+        return min(covering, key=lambda i: self.chunks[i].end_line - self.chunks[i].start_line)
 
     @cached_property
     def definitions(self) -> dict[str, tuple[int, ...]]:
@@ -103,16 +125,18 @@ def build_index(
     are split, never silently truncated).
     """
     chunks: list[RetrievedContext] = []
-    for file_path in discover_python_files(repository_root, {*EXCLUDED_DIRS, *extra_excluded_dirs}):
+    files = discover_python_files(repository_root, {*EXCLUDED_DIRS, *extra_excluded_dirs})
+    symbols = SymbolIndex.build(repository_root, files)
+    for file_path in files:
         for chunk in chunk_python_file(repository_root, file_path):
             chunks.extend(
                 fit_to_token_budget(chunk, embedder.count_tokens, embedder.max_tokens)
             )
     logger.info("Embedding %d chunks", len(chunks))
     if not chunks:
-        return CodeIndex((), np.zeros((0, 0), dtype=np.float32), embedder)
+        return CodeIndex((), np.zeros((0, 0), dtype=np.float32), embedder, symbols)
     embeddings = embedder.embed_passages([passage_text(chunk) for chunk in chunks])
-    return CodeIndex(tuple(chunks), embeddings, embedder)
+    return CodeIndex(tuple(chunks), embeddings, embedder, symbols)
 
 
 # --------------------------------------------------------------------------
@@ -154,21 +178,15 @@ def build_hunk_query(hunk: DiffHunk, count_tokens: Callable[[str], int], max_tok
     return header + "\n" + "\n".join(changed_only)
 
 
-def changed_code(hunk: DiffHunk) -> list[str]:
-    """Source text of the hunk's changed lines, markers removed (added, else deleted)."""
-    body = [line for line in hunk.patch.splitlines()[1:] if not line.startswith("\\")]
-    added = [line[1:] for line in body if line.startswith("+")]
-    return added or [line[1:] for line in body if line.startswith("-")]
-
-
-def referenced_definitions(
+def _referenced_definitions_named(
     index: CodeIndex, hunk: DiffHunk, exclude: Callable[[RetrievedContext], bool]
-) -> list[int]:
-    """Chunk positions defining a name the hunk calls or instantiates, calls first, then types, each in order of first use.
+) -> list[tuple[int, str, bool]]:
+    """(chunk position, name, was it called?) for definitions the hunk calls or instantiates.
 
-    Deterministic callee lookup: if the changed code calls `render_inline_comment`
-    or builds a `Finding`, the reviewer should see those definitions whether or
-    not an embedding model happens to link them (measured: it mostly doesn't).
+    Calls first, then type mentions, each in order of first use. Deterministic callee
+    lookup: if the changed code calls `render_inline_comment` or builds a `Finding`,
+    the reviewer should see those definitions whether or not an embedding model
+    happens to link them (measured: it mostly doesn't).
     """
     code = _INTRODUCES_NAME.sub("", "\n".join(changed_code(hunk)))
     # name -> was it ever called? (dict keeps first-use order)
@@ -180,49 +198,66 @@ def referenced_definitions(
         # `def finding()` elsewhere in the repository.
         if call or name[0].isupper():
             uses[name] = uses.get(name, False) or bool(call)
-    # Calls before type mentions: what the change *does* matters more than what
-    # its signature mentions, and the cap on definitions is small.
-    used = [n for n, called in uses.items() if called] + [n for n, called in uses.items() if not called]
-    positions: list[int] = []
-    for name in used:
+    ordered = [n for n, called in uses.items() if called] + [n for n, called in uses.items() if not called]
+    found: list[tuple[int, str, bool]] = []
+    taken: set[int] = set()
+    for name in ordered:
         candidates = index.definitions.get(name, ())
         if not candidates or len(candidates) > _MAX_DEFINITIONS_PER_NAME:
             continue
-        positions.extend(p for p in candidates if not exclude(index.chunks[p]) and p not in positions)
-    return positions
+        for position in candidates:
+            if position not in taken and not exclude(index.chunks[position]):
+                taken.add(position)
+                found.append((position, name, uses[name]))
+    return found
 
 
-def changed_new_lines(hunk: DiffHunk) -> frozenset[int]:
-    """New-file line numbers the hunk touches (a pure deletion maps to its position)."""
-    if hunk.added_lines:
-        return hunk.added_lines
-    _, _, new_start, _ = parse_hunk_header(hunk.patch.splitlines()[0])
-    return frozenset({new_start})
+def referenced_definitions(
+    index: CodeIndex, hunk: DiffHunk, exclude: Callable[[RetrievedContext], bool]
+) -> list[int]:
+    """Chunk positions defining a name the hunk calls or instantiates (calls first)."""
+    return [position for position, _name, _called in _referenced_definitions_named(index, hunk, exclude)]
 
 
-def retrieve_for_hunk(
+def _imports_only(content: str) -> bool:
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    return bool(lines) and all(
+        line.startswith("#") or line.startswith(("import ", "from ")) or line in (")", "(") or line.endswith(",")
+        for line in lines
+    ) and any(line.startswith(("import ", "from ")) for line in lines)
+
+
+@dataclass(frozen=True)
+class Retrieval:
+    """What the reviewer is given for one hunk."""
+
+    context: tuple[RetrievedContext, ...]
+    notes: tuple[str, ...]
+
+
+def retrieve(
     index: CodeIndex,
     hunk: DiffHunk,
+    pr_hunks: list[DiffHunk] | None = None,
     top_k: int = DEFAULT_TOP_K,
     exclude_changed_code: bool = True,
     symmetric: bool = False,
     lookup_definitions: bool = True,
-) -> list[RetrievedContext]:
-    """Repository context relevant to reviewing `hunk`.
+    analyze_dependents: bool = True,
+) -> Retrieval:
+    """Everything worth showing a reviewer of `hunk`, in priority order:
 
-    Two sources, merged and in this order: definitions of names the changed code
-    calls or instantiates (exact; capped at about half of `top_k`), then semantic
-    search over the hunk's text, best match first, to fill the remaining slots.
-    So the list is priority order, not purely descending by score.
+      1. DEPENDENTS: code outside the diff that this change could break (callers,
+         instantiations, subclasses, dangling references...), worst first, each with the
+         reason it is shown. Needs `pr_hunks`, every hunk in the PR, to tell callers the
+         PR already updated from the ones it left untouched.
+      2. DEFINITIONS of the functions and types the changed code uses.
+      3. SEMANTIC matches for the changed code, to fill the remaining `top_k` slots.
 
-    The index must be built from the PR's *head* state so chunk line numbers
-    line up with the hunk's new-file line numbers. With `exclude_changed_code`
-    (default) chunks overlapping the changed lines are dropped: the most
-    similar chunk to a hunk is the code it modifies, and the reviewer is already
-    shown that.
-
-    `symmetric=True` embeds the query exactly like an indexed passage (no query
-    instruction) -- see experiments/retrieval_eval.py for why it's not the default.
+    The index must be built from the PR's *head* state so chunk line numbers line up
+    with the hunk's. With `exclude_changed_code` (default) chunks overlapping the changed
+    lines are dropped from (2) and (3): the most similar chunk to a hunk is the code it
+    modifies, and the reviewer is already shown that.
     """
     changed = changed_new_lines(hunk)
 
@@ -237,17 +272,59 @@ def retrieve_for_hunk(
         index.embedder.embed_passages([query])[0]
         if symmetric
         else index.embedder.embed_query(query)
-    )
+    ) if index.chunks else None
+
+    def with_score(position: int, reason: str) -> RetrievedContext:
+        assert vector is not None
+        return replace(index.chunks[position], score=float(index.embeddings[position] @ vector), reason=reason)
 
     hits: list[RetrievedContext] = []
-    if lookup_definitions and index.chunks:
-        for position in referenced_definitions(index, hunk, exclude)[: (top_k + 1) // 2]:
-            hits.append(replace(index.chunks[position], score=float(index.embeddings[position] @ vector)))
+    notes: tuple[str, ...] = ()
+    taken: set[int] = set()
 
-    seen = {(hit.filename, hit.start_line) for hit in hits}
-    for hit in index.search(query, top_k=top_k + len(hits), exclude=exclude, query_vector=vector):
-        if len(hits) == top_k:
+    if analyze_dependents and index.chunks:
+        report = analyze_impact(index.symbols, hunk, pr_hunks or [hunk])
+        notes = report.notes
+        for item in report.items:
+            position = index.chunk_position_at(item.file, item.line)
+            if position is not None and position not in taken:
+                taken.add(position)
+                hits.append(with_score(position, item.reason))
+
+    callees: list[RetrievedContext] = []
+    if lookup_definitions and index.chunks:
+        for position, name, called in _referenced_definitions_named(index, hunk, exclude)[: (top_k + 1) // 2]:
+            if position not in taken:
+                taken.add(position)
+                verb = "calls" if called else "mentions"
+                callees.append(with_score(position, f"defines `{name}`, which the changed code {verb}"))
+    hits += callees
+
+    semantic = index.search(query, top_k=top_k + len(taken), exclude=exclude, query_vector=vector)
+    added = len(callees)
+    for hit in semantic:
+        if added >= top_k:
             break
-        if (hit.filename, hit.start_line) not in seen:
-            hits.append(hit)
-    return hits
+        position = index._position.get((hit.filename, hit.start_line))
+        if position is not None and position in taken:
+            continue
+        if _imports_only(hit.content):
+            continue  # a block of imports says which modules exist, not what the code does
+        hits.append(replace(hit, reason="semantically similar to the changed code"))
+        added += 1
+    return Retrieval(tuple(hits), notes)
+
+
+def retrieve_for_hunk(
+    index: CodeIndex,
+    hunk: DiffHunk,
+    top_k: int = DEFAULT_TOP_K,
+    exclude_changed_code: bool = True,
+    symmetric: bool = False,
+    lookup_definitions: bool = True,
+    pr_hunks: list[DiffHunk] | None = None,
+    analyze_dependents: bool = True,
+) -> list[RetrievedContext]:
+    """Just the context chunks of `retrieve`. Kept for callers that don't need the notes."""
+    return list(retrieve(index, hunk, pr_hunks, top_k, exclude_changed_code, symmetric,
+                         lookup_definitions, analyze_dependents).context)

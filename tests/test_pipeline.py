@@ -1,3 +1,4 @@
+from pr_agent.search import Retrieval
 from unittest.mock import Mock, patch
 
 from pr_agent.models import Category, ChangedFile, Finding, Severity
@@ -242,7 +243,7 @@ def test_run_review_hands_hunks_and_retrieved_context_to_the_injected_reviewer()
     with (
         patch("pr_agent.pipeline.fetch_pull_request", return_value=Mock()),
         patch("pr_agent.pipeline.fetch_changed_files", return_value=[make_valid_changed_file()]),
-        patch("pr_agent.pipeline.retrieve_for_hunk", return_value=[retrieved]),
+        patch("pr_agent.pipeline.retrieve", return_value=Retrieval((retrieved,), ())),
     ):
         findings = run_review(
             github=Mock(),

@@ -14,6 +14,7 @@ from pr_agent.graph import (
 from pr_agent.llm import FakeLLMClient, findings_reply
 from pr_agent.models import Category, ChangedFile, Finding, RetrievedContext, Severity
 from pr_agent.reviewer import LLMReviewer
+from pr_agent.search import Retrieval
 
 CODE = "@@ -1,0 +1,3 @@\n+query = f\"SELECT {uid}\"\n+run(query)\n+done = True"  # added lines 1-3
 COMMENT_ONLY = "@@ -1,0 +1,1 @@\n+# just a note"
@@ -200,7 +201,7 @@ def test_retrieved_context_is_handed_to_the_review_step(env: Any) -> None:
         seen.extend(items)
         return []
 
-    with patch("pr_agent.pipeline.retrieve_for_hunk", return_value=[chunk]):
+    with patch("pr_agent.pipeline.retrieve", return_value=Retrieval((chunk,), ())):
         graph = build_review_graph(github=Mock(), review_step=step, index=Mock())
         run(graph)
 

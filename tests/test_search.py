@@ -391,3 +391,12 @@ def test_called_functions_rank_ahead_of_type_mentions(tmp_path: Path) -> None:
     hunk = make_hunk("@@ -0,0 +1,2 @@\n+def run(items: list[Finding]) -> None:\n+    fetch()", "app.py")
     found = [index.chunks[p].filename for p in referenced_definitions(index, hunk, lambda _c: False)]
     assert found == ["client.py", "models.py"]
+
+
+def test_semantic_fill_skips_import_only_chunks(tmp_path: Path) -> None:
+    write_file(tmp_path, "imports.py", "import os\nfrom pathlib import Path\n")
+    write_file(tmp_path, "real.py", "def compute_total(items):\n    return sum(items)\n")
+    index = build_index(tmp_path, FakeEmbedder())
+    hunk = make_hunk("@@ -0,0 +1,2 @@\n+import os\n+from pathlib import Path", "client.py")
+    hits = retrieve_for_hunk(index, hunk, top_k=5)
+    assert all(h.filename != "imports.py" for h in hits)

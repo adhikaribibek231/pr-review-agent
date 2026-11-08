@@ -4,18 +4,28 @@ from github import Github
 from pr_agent.diff_parser import DiffHunk, is_noise_file, parse_hunks
 from pr_agent.github_client import fetch_changed_files, fetch_pull_request, post_review
 from pr_agent.models import Category, ChangedFile, Finding, HunkContext, Reviewer, Severity
-from pr_agent.search import CodeIndex, retrieve_for_hunk
+from pr_agent.search import CodeIndex, retrieve
 from pr_agent.validator import validate_findings
 
 logger = logging.getLogger(__name__)
 
 
-def gather_context(hunks: list[DiffHunk], index: CodeIndex | None) -> list[HunkContext]:
-    """Retrieve context for every hunk; with no index, hunks carry no context."""
-    return [
-        HunkContext(hunk, tuple(retrieve_for_hunk(index, hunk)) if index is not None else ())
-        for hunk in hunks
-    ]
+def gather_context(
+    hunks: list[DiffHunk], index: CodeIndex | None, all_hunks: list[DiffHunk] | None = None
+) -> list[HunkContext]:
+    """Retrieve context for every hunk; with no index, hunks carry none.
+
+    `all_hunks` is every hunk in the PR, including ones triage skipped. Retrieval needs
+    it to tell a caller the PR already updated from one it left untouched.
+    """
+    pr_hunks = all_hunks if all_hunks is not None else hunks
+    if index is None:
+        return [HunkContext(hunk, ()) for hunk in hunks]
+    items: list[HunkContext] = []
+    for hunk in hunks:
+        retrieval = retrieve(index, hunk, pr_hunks)
+        items.append(HunkContext(hunk, retrieval.context, retrieval.notes))
+    return items
 
 
 def build_hunks(changed_files:list[ChangedFile])->list[DiffHunk]:

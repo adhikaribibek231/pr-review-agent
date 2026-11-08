@@ -133,7 +133,7 @@ def build_review_graph(
         return {"reviewable": list(result.reviewable), "skipped_trivial": len(result.skipped)}
 
     def retrieve(state: ReviewState) -> dict[str, Any]:
-        return {"items": gather_context(state["reviewable"], index)}
+        return {"items": gather_context(state["reviewable"], index, all_hunks=state["hunks"])}
 
     def review(state: ReviewState) -> dict[str, Any]:
         attempts = state.get("attempts", 0)
