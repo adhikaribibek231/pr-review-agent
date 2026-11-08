@@ -30,7 +30,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from pr_agent.diff_parser import DiffHunk, parse_hunks  # noqa: E402
 from pr_agent.embedding import BGE_QUERY_INSTRUCTION, SentenceTransformerEmbedder  # noqa: E402
 from pr_agent.models import RetrievedContext  # noqa: E402
-from pr_agent.search import CodeIndex, build_index, retrieve_for_hunk  # noqa: E402
+from pr_agent.search import CodeIndex, build_index, retrieve, retrieve_for_hunk  # noqa: E402
 
 TOP_K = 5
 
@@ -74,6 +74,25 @@ HUNK_CASES: list[tuple[Target, list[Target]]] = [
      [("src/pr_agent/diff_parser.py", "split_hunks"), ("src/pr_agent/diff_parser.py", "parse_changed_lines"),
       ("src/pr_agent/diff_parser.py", "DiffHunk")]),
 ]
+
+
+# (symbol whose signature "changed", callers OUTSIDE its own file that a reviewer must be shown).
+# These are real call sites in this repository; keep them true when the code moves.
+IMPACT_CASES: list[tuple[Target, list[Target]]] = [
+    (("src/pr_agent/validator.py", "check_findings"),
+     [("src/pr_agent/graph.py", "build_review_graph.validate")]),
+    (("src/pr_agent/pipeline.py", "aggregate_findings"),
+     [("src/pr_agent/graph.py", "build_review_graph.aggregate")]),
+    (("src/pr_agent/triage.py", "triage_hunks"),
+     [("src/pr_agent/graph.py", "build_review_graph.triage")]),
+    (("src/pr_agent/retriever.py", "fit_to_token_budget"),
+     [("src/pr_agent/search.py", "build_index")]),
+    (("src/pr_agent/renderer.py", "render_inline_comment"),
+     [("src/pr_agent/github_client.py", "post_review")]),
+    (("src/pr_agent/search.py", "build_index"),
+     [("src/pr_agent/pipeline.py", "gather_context")] if False else []),
+]
+IMPACT_CASES = [case for case in IMPACT_CASES if case[1]]
 
 
 def symbol_span(root: Path, target: Target) -> tuple[str, int, int]:
@@ -149,6 +168,22 @@ def run_hunks(index: CodeIndex, root: Path, name: str, verbose: bool, **options:
     return Score(name, ranks)
 
 
+def run_impact(index: CodeIndex, root: Path, name: str, verbose: bool, **options: bool) -> str:
+    """Recall of callers: of the call sites outside the file, how many reach the reviewer?"""
+    found = total = 0
+    for changed, callers in IMPACT_CASES:
+        hunk = hunk_for(root, changed)
+        hits = retrieve(index, hunk, [hunk], **options).context
+        spans = [symbol_span(root, c) for c in callers]
+        for span in spans:
+            total += 1
+            hit = first_hit_rank(hits, [span]) is not None
+            found += hit
+            if verbose and not hit:
+                print(f"  [{name}] MISSED caller {span[0]}:{span[1]} of {changed[1]}")
+    return f"{name:<34} callers shown = {found}/{total}  ({found / total:.0%})"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     _ = parser.add_argument("-v", "--verbose", action="store_true", help="print non-rank-1 cases")
@@ -163,6 +198,11 @@ def main() -> None:
     print(run_queries(index, PROJECT_ROOT, "no query prefix", verbose).line())
     embedder.query_instruction = BGE_QUERY_INSTRUCTION
     print(run_queries(index, PROJECT_ROOT, "BGE query prefix", verbose).line())
+
+    print("\n== a function's signature changes -> do its callers in OTHER files reach the reviewer? ==")
+    embedder.query_instruction = ""
+    print(run_impact(index, PROJECT_ROOT, "semantic + definitions only", verbose, analyze_dependents=False))
+    print(run_impact(index, PROJECT_ROOT, "with impact analysis", verbose))
 
     print("\n== changed hunk -> related code (changed code excluded) ==")
     embedder.query_instruction = ""
