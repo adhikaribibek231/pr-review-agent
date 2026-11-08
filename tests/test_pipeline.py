@@ -218,3 +218,58 @@ def test_triage_findings_returns_true_when_findings_exist() -> None:
     ]
 
     assert triage_findings(findings) is True
+
+
+def test_run_review_hands_hunks_and_retrieved_context_to_the_injected_reviewer() -> None:
+    from pr_agent.models import RetrievedContext
+    from pr_agent.pipeline import HunkContext
+
+    seen: list[HunkContext] = []
+    retrieved = RetrievedContext("lib.py", 1, 3, "def helper(): ...", 0.9)
+
+    def reviewer(items: list[HunkContext]) -> list[Finding]:
+        seen.extend(items)
+        return [
+            Finding(
+                filename="main.py",
+                line=36,
+                severity="error",
+                category="bug",
+                message="injected",
+            )
+        ]
+
+    with (
+        patch("pr_agent.pipeline.fetch_pull_request", return_value=Mock()),
+        patch("pr_agent.pipeline.fetch_changed_files", return_value=[make_valid_changed_file()]),
+        patch("pr_agent.pipeline.retrieve_for_hunk", return_value=[retrieved]),
+    ):
+        findings = run_review(
+            github=Mock(),
+            repository_name="owner/repository",
+            pr_number=1,
+            post_requested=False,
+            reviewer=reviewer,
+            index=Mock(),
+        )
+
+    assert [f.message for f in findings] == ["injected"]
+    assert len(seen) == 1
+    assert seen[0].hunk.filename == "main.py"
+    assert seen[0].context == (retrieved,)
+
+
+def test_run_review_without_an_index_gives_the_reviewer_empty_context() -> None:
+    seen = []
+
+    def reviewer(items):  # type: ignore[no-untyped-def]
+        seen.extend(items)
+        return []
+
+    with (
+        patch("pr_agent.pipeline.fetch_pull_request", return_value=Mock()),
+        patch("pr_agent.pipeline.fetch_changed_files", return_value=[make_valid_changed_file()]),
+    ):
+        _ = run_review(Mock(), "owner/repository", 1, False, reviewer=reviewer)
+
+    assert seen and seen[0].context == ()
