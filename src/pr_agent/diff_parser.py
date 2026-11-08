@@ -102,3 +102,38 @@ def parse_hunks(filename:str, patch:str | None)->list[DiffHunk]:
 def is_noise_file(filename:str)->bool:
     basename = filename.rsplit("/", maxsplit=1)[-1]
     return basename in NOISE_FILENAMES
+
+
+def changed_code(hunk: DiffHunk) -> list[str]:
+    """Source text of the hunk's changed lines, markers removed (added, else deleted)."""
+    body = [line for line in hunk.patch.splitlines()[1:] if not line.startswith("\\")]
+    added = [line[1:] for line in body if line.startswith("+")]
+    return added or [line[1:] for line in body if line.startswith("-")]
+
+
+def changed_new_lines(hunk: DiffHunk) -> frozenset[int]:
+    """New-file line numbers the hunk touches (a pure deletion maps to its position)."""
+    if hunk.added_lines:
+        return hunk.added_lines
+    _, _, new_start, _ = parse_hunk_header(hunk.patch.splitlines()[0])
+    return frozenset({new_start})
+
+
+def deletions(hunk: DiffHunk) -> list[tuple[int, str]]:
+    """(new-file line just BEFORE the deletion, deleted text) for each deleted line.
+
+    A deleted line has no new-file number, so "where" means the last surviving line
+    above it. Unlike `changed_new_lines`, which for a pure deletion falls back to the
+    hunk's first line (up to three lines of context away), this is exact.
+    """
+    lines = hunk.patch.splitlines()
+    _, _, new_cursor, _ = parse_hunk_header(lines[0])
+    found: list[tuple[int, str]] = []
+    for line in lines[1:]:
+        if line.startswith("\\"):
+            continue
+        if line.startswith("-"):
+            found.append((max(new_cursor - 1, 1), line[1:]))
+        else:
+            new_cursor += 1
+    return found
