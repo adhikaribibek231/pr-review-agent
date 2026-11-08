@@ -55,9 +55,11 @@ def generate_fake_findings(hunks:list[DiffHunk])->list[Finding]:
     return findings
 
 def aggregate_findings(findings: list[Finding]) -> list[Finding]:
-    return sorted(findings, key=lambda f: (f.filename, f.line, f.severity.rank))
+    """Drop exact duplicates, then order by file, line, and severity (worst first)."""
+    unique = dict.fromkeys(findings)  # Finding is frozen, hence hashable; keeps first-seen order
+    return sorted(unique, key=lambda f: (f.filename, f.line, f.severity.rank))
 
-def triage_findings(findings:list[Finding])->bool:
+def should_post(findings:list[Finding])->bool:
     return bool(findings)
 
 def fake_reviewer(items: list[HunkContext]) -> list[Finding]:
@@ -81,8 +83,8 @@ def run_review(
     validated_findings = validate_findings(findings = findings, hunks=hunks)
     aggregated_findings = aggregate_findings(findings=validated_findings)
     logger.info(f"Validated {len(aggregated_findings)}/{len(findings)}")
-    should_post = triage_findings(aggregated_findings)
-    if post_requested and should_post:
+    post_allowed = should_post(aggregated_findings)
+    if post_requested and post_allowed:
         logger.info(f"Posting {len(aggregated_findings)} findings")
         post_review(pull_request=pull_request,findings=aggregated_findings)
         logger.info("Review Posted successfully")

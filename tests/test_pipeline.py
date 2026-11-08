@@ -4,7 +4,7 @@ from pr_agent.models import Category, ChangedFile, Finding, Severity
 from pr_agent.pipeline import (
     aggregate_findings,
     run_review,
-    triage_findings,
+    should_post,
 )
 
 
@@ -202,11 +202,11 @@ def test_aggregate_findings_sorts_by_filename_then_line_then_severity() -> None:
     ]
 
 
-def test_triage_findings_returns_false_for_empty_findings() -> None:
-    assert triage_findings([]) is False
+def test_should_post_returns_false_for_empty_findings() -> None:
+    assert should_post([]) is False
 
 
-def test_triage_findings_returns_true_when_findings_exist() -> None:
+def test_should_post_returns_true_when_findings_exist() -> None:
     findings = [
         Finding(
             filename="main.py",
@@ -217,7 +217,7 @@ def test_triage_findings_returns_true_when_findings_exist() -> None:
         )
     ]
 
-    assert triage_findings(findings) is True
+    assert should_post(findings) is True
 
 
 def test_run_review_hands_hunks_and_retrieved_context_to_the_injected_reviewer() -> None:
@@ -273,3 +273,9 @@ def test_run_review_without_an_index_gives_the_reviewer_empty_context() -> None:
         _ = run_review(Mock(), "owner/repository", 1, False, reviewer=reviewer)
 
     assert seen and seen[0].context == ()
+
+
+def test_aggregate_findings_removes_exact_duplicates() -> None:
+    one = Finding(filename="a.py", line=1, severity=Severity.WARNING, category=Category.BUG, message="same")
+    other = Finding(filename="a.py", line=1, severity=Severity.WARNING, category=Category.BUG, message="different")
+    assert aggregate_findings([one, one, other]) == [one, other]
