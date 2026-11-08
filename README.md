@@ -185,7 +185,20 @@ An orchestrated graph makes it practical to share state between steps, skip low-
 
 ## Current development status
 
-The current implementation is intentionally incremental and may not match the target architecture above. It currently includes PR-diff parsing, changed-line tracking, common noise-file detection, parser tests, experiments, and early integration placeholders. Retrieval, LLM review generation, validation, orchestration, and GitHub Actions automation are still being developed.
+Working and tested (`pytest`):
+
+- PR fetching, diff parsing and changed-line tracking, noise-file filtering
+- Deterministic grounding check (a finding must target an added line)
+- AST-based chunking, with a **token-budget guarantee**: no chunk is ever silently truncated by the embedding model
+- Semantic search (`pr_agent.search`): `build_index` once, `index.search(query)` many times
+- PR-aware retrieval: `retrieve_for_hunk` combines exact definition lookup for names the change uses with semantic search, and excludes the changed code itself
+- `Severity`/`Category` enums and a Pydantic `Finding`/`ReviewOutput`: LLM output is validated at the boundary, with the JSON schema generated from the same models
+- `LLMReviewer`: builds the prompt (numbered diff lines, retrieved context, untrusted-data rules), validates the reply, retries once with the error attached; talks to the model only through the `LLMClient` protocol
+- `run_review` accepts an injectable `reviewer` and an optional `index`, so any reviewer receives each hunk together with its retrieved context
+
+Not yet built: a real LLM client (a scripted `FakeLLMClient` is used; see `experiments/review_with_fake_llm.py`), reranking, LangGraph orchestration, posting idempotency, GitHub Actions, and the planted-bug evaluation.
+
+Measure retrieval changes with `python experiments/retrieval_eval.py -v` rather than by eye.
 
 ## Running locally
 
