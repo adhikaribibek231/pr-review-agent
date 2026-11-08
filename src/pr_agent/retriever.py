@@ -1,5 +1,7 @@
 import ast
 import logging
+from collections.abc import Callable, Collection
+from dataclasses import replace
 from pathlib import Path
 import tokenize
 from pr_agent.models import RetrievedContext
@@ -113,13 +115,15 @@ def _chunk_class(filename: str, source_lines: list[str], node:ast.ClassDef)-> li
 
     return contexts
 
-def discover_python_files(repository_root: Path) -> list[Path]:
+def discover_python_files(
+    repository_root: Path, excluded_dirs: Collection[str] = EXCLUDED_DIRS
+) -> list[Path]:
     
     files:list[Path] = []
 
     for path in repository_root.rglob("*.py"):
         relative_parts = path.relative_to(repository_root).parts
-        if any(part in EXCLUDED_DIRS for part in relative_parts):
+        if any(part in excluded_dirs for part in relative_parts):
             continue
         if path.is_file():
             files.append(path)
@@ -167,3 +171,94 @@ def chunk_python_file(repository_root:Path, file_path: Path)-> list[RetrievedCon
     flush_module_run()
 
     return contexts
+
+
+
+def passage_text(chunk: RetrievedContext) -> str:
+    """Exact text that gets embedded for a chunk.
+
+    The token budget must be checked against this, not against `chunk.content`:
+    the filename header is part of what the model reads.
+    """
+    return f"File: {chunk.filename}\n{chunk.content}"
+
+
+def _split_point(lines: list[str]) -> int:
+    """Index to cut `lines` at, so the left half is lines[:i] and the right lines[i:].
+
+    Prefers the blank line closest to the middle (within the middle half) so a
+    cut tends to fall between statements rather than inside one; otherwise cuts
+    at the midpoint. Always returns 1 <= i <= len(lines) - 1.
+    """
+    count = len(lines)
+    middle = count // 2
+    lower, upper = max(1, count // 4), min(count - 1, (3 * count) // 4)
+    blanks = [i for i in range(lower, upper + 1) if not lines[i - 1].strip()]
+    if blanks:
+        return min(blanks, key=lambda i: abs(i - middle))
+    return max(1, min(count - 1, middle))
+
+
+def _truncate_to_budget(
+    chunk: RetrievedContext,
+    count_tokens: Callable[[str], int],
+    max_tokens: int,
+) -> list[RetrievedContext]:
+    """Last resort for a single line that alone exceeds the budget."""
+    low, high = 0, len(chunk.content)
+    while low < high:  # largest prefix length that still fits
+        mid = (low + high + 1) // 2
+        if count_tokens(passage_text(replace(chunk, content=chunk.content[:mid]))) <= max_tokens:
+            low = mid
+        else:
+            high = mid - 1
+    logger.warning(
+        "Truncated a single %d-character line at %s:%d to fit %d tokens",
+        len(chunk.content), chunk.filename, chunk.start_line, max_tokens,
+    )
+    if low == 0:
+        return []
+    return [replace(chunk, content=chunk.content[:low])]
+
+
+def fit_to_token_budget(
+    chunk: RetrievedContext,
+    count_tokens: Callable[[str], int],
+    max_tokens: int,
+) -> list[RetrievedContext]:
+    """Split `chunk` until every piece's embedded text fits in `max_tokens`.
+
+    The line cap in `_make_context` is only a proxy for a token cap: real code
+    with long docstrings or dense lines blows through it (measured: 4-22% of
+    40-line chunks exceed 512 tokens on PyGithub / sentence-transformers /
+    numpy). An embedding model truncates silently, so an over-budget chunk would
+    be indexed by its first half only, with no error.
+
+    Splitting is by recursive halving on line boundaries, so every original line
+    stays covered exactly once and line numbers stay exact.
+    """
+    if count_tokens(passage_text(chunk)) <= max_tokens:
+        return [chunk]
+
+    lines = chunk.content.split("\n")
+    if len(lines) == 1:
+        return _truncate_to_budget(chunk, count_tokens, max_tokens)
+
+    cut = _split_point(lines)
+    pieces = [
+        replace(
+            chunk,
+            content="\n".join(lines[:cut]),
+            end_line=chunk.start_line + cut - 1,
+        ),
+        replace(
+            chunk,
+            content="\n".join(lines[cut:]),
+            start_line=chunk.start_line + cut,
+        ),
+    ]
+    fitted: list[RetrievedContext] = []
+    for piece in pieces:
+        if piece.content.strip():  # a half that is only blank lines isn't worth indexing
+            fitted.extend(fit_to_token_budget(piece, count_tokens, max_tokens))
+    return fitted
