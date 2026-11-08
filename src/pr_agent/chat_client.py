@@ -18,11 +18,10 @@ import logging
 import os
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from typing import Any
 
-from pr_agent.llm import FallbackClient, LLMClient, PromptTooLargeError
-from pr_agent.providers import ResolvedProvider, describe, select_providers
+from pr_agent.llm import FallbackClient, LLMClient, PromptTooLargeError, Usage
+from pr_agent.providers import ResolvedProvider, describe, run_caps, select_providers
 
 logger = logging.getLogger(__name__)
 
@@ -77,17 +76,11 @@ class _TokenPacer:
         entry[1] = float(actual_cost)
 
 
-@dataclass
-class Usage:
-    """Running totals, so an evaluation can report what a run cost."""
+_OPENAI_REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5")
 
-    calls: int = 0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
 
-    @property
-    def total_tokens(self) -> int:
-        return self.prompt_tokens + self.completion_tokens
+def _is_restricted_openai_model(provider: ResolvedProvider) -> bool:
+    return provider.name == "openai" and provider.model.lower().startswith(_OPENAI_REASONING_PREFIXES)
 
 
 class ChatClient:
@@ -147,6 +140,12 @@ class ChatClient:
             reservation = self._pacer.reserve(estimated_prompt + self._max_tokens)
 
         options: dict[str, Any] = {}
+        if _is_restricted_openai_model(self.provider):
+            # OpenAI's reasoning models reject `max_tokens` and any non-default temperature.
+            options["max_completion_tokens"] = self._max_tokens
+        else:
+            options["max_tokens"] = self._max_tokens
+            options["temperature"] = self._temperature
         if self.provider.spec.json_mode:
             options["response_format"] = {"type": "json_object"}
         if self.provider.spec.reasoning_effort:
@@ -154,8 +153,6 @@ class ChatClient:
         response = self._sdk.chat.completions.create(
             model=self.model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            temperature=self._temperature,
-            max_tokens=self._max_tokens,
             **options,
         )
         usage = getattr(response, "usage", None)
@@ -181,10 +178,14 @@ def make_client(env: Mapping[str, str] | None = None, **client_options: Any) -> 
 
     One configured provider gives a plain `ChatClient`; several give a `FallbackClient`
     that tries them in priority order. Raises `LLMConfigError`, naming the exact variable
-    to set, if nothing usable is configured. `client_options` (e.g. `max_calls`) apply to
-    every provider.
+    to set, if nothing usable is configured. `client_options` apply to every provider. Per-run
+    spending caps come from LLM_MAX_CALLS_PER_RUN / LLM_MAX_TOKENS_PER_RUN unless passed here.
     """
-    providers = select_providers(os.environ if env is None else env)
+    environment = os.environ if env is None else env
+    providers = select_providers(environment)
+    max_calls, max_tokens = run_caps(environment)
+    client_options.setdefault("max_calls", max_calls)
+    client_options.setdefault("max_total_tokens", max_tokens)
     logger.info("LLM providers: %s", describe(providers))
     for provider in providers:
         if provider.spec.cost != "free":

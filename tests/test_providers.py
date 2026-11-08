@@ -1,7 +1,7 @@
 import pytest
 
 from pr_agent.providers import (
-    PROVIDERS, LLMConfigError, ResolvedProvider, configured_providers, describe, resolve, select_providers,
+    DEFAULT_MAX_CALLS_PER_RUN, DEFAULT_MAX_TOKENS_PER_RUN, PROVIDERS, run_caps, LLMConfigError, ResolvedProvider, configured_providers, describe, resolve, select_providers,
 )
 
 GROQ = {"GROQ_API_KEY": "gsk_secret_groq"}
@@ -183,4 +183,27 @@ def test_every_variable_in_the_registry_is_documented_in_env_example() -> None:
         for variable in (spec.key_env, spec.model_env, spec.base_url_env):
             if variable:
                 assert variable in documented, f"{variable} is missing from .env.example"
-    assert {"LLM_PROVIDER", "LLM_ALLOW_PAID", "GITHUB_TOKEN"} <= documented
+    assert {"LLM_PROVIDER", "LLM_ALLOW_PAID", "GITHUB_TOKEN", "LLM_MAX_CALLS_PER_RUN",
+            "LLM_MAX_TOKENS_PER_RUN"} <= documented
+
+
+# ---- spending caps ------------------------------------------------------------------------------------------
+
+
+def test_caps_have_safe_defaults() -> None:
+    assert run_caps({}) == (DEFAULT_MAX_CALLS_PER_RUN, DEFAULT_MAX_TOKENS_PER_RUN) == (100, 200_000)
+
+
+def test_caps_can_be_set_from_the_environment() -> None:
+    assert run_caps({"LLM_MAX_CALLS_PER_RUN": "7", "LLM_MAX_TOKENS_PER_RUN": " 5000 "}) == (7, 5000)
+
+
+@pytest.mark.parametrize("word", ["none", "OFF", "unlimited", "0"])
+def test_a_cap_can_be_removed_explicitly(word: str) -> None:
+    assert run_caps({"LLM_MAX_CALLS_PER_RUN": word}) == (None, DEFAULT_MAX_TOKENS_PER_RUN)
+
+
+@pytest.mark.parametrize("bad", ["lots", "1.5", "-3", "10k"])
+def test_a_malformed_cap_is_an_error_not_silently_ignored(bad: str) -> None:
+    with pytest.raises(LLMConfigError, match="LLM_MAX_CALLS_PER_RUN"):
+        run_caps({"LLM_MAX_CALLS_PER_RUN": bad})

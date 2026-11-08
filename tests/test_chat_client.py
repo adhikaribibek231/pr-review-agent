@@ -211,3 +211,53 @@ def test_nothing_configured_fails_before_any_network_use() -> None:
         with pytest.raises(LLMConfigError):
             make_client({})
     sdk.assert_not_called()
+
+
+# ---- caps from the environment, OpenAI model quirks, combined usage -----------------------------------------------
+
+
+def test_make_client_applies_the_environment_caps_to_every_provider() -> None:
+    env = {"GROQ_API_KEY": "gsk", "HF_TOKEN": "hf", "LLM_MAX_CALLS_PER_RUN": "5", "LLM_MAX_TOKENS_PER_RUN": "9000"}
+    with patch("openai.OpenAI"):
+        built = make_client(env)
+    assert all((c._max_calls, c._max_total_tokens) == (5, 9000) for c in built._clients)  # type: ignore[attr-defined]
+
+
+def test_make_client_has_safe_caps_even_when_nothing_is_configured_for_them() -> None:
+    with patch("openai.OpenAI"):
+        built = make_client({"GROQ_API_KEY": "gsk"})
+    assert (built._max_calls, built._max_total_tokens) == (100, 200_000)  # type: ignore[attr-defined]
+
+
+def test_a_bad_cap_stops_make_client_before_anything_is_built() -> None:
+    with patch("openai.OpenAI") as sdk:
+        with pytest.raises(LLMConfigError):
+            make_client({"GROQ_API_KEY": "gsk", "LLM_MAX_TOKENS_PER_RUN": "many"})
+    sdk.assert_not_called()
+
+
+@pytest.mark.parametrize("model", ["o3-mini", "o4-mini", "gpt-5", "gpt-5-mini", "GPT-5-nano"])
+def test_openai_reasoning_models_get_max_completion_tokens_and_no_temperature(model: str) -> None:
+    c = client(provider("openai", model))
+    _ = c.complete_json(system="s", user="u")
+    kwargs = c._sdk.chat.completions.create.call_args.kwargs
+    assert kwargs["max_completion_tokens"] == 2000
+    assert "max_tokens" not in kwargs and "temperature" not in kwargs
+
+
+@pytest.mark.parametrize(("name", "model"), [("openai", "gpt-4.1-mini"), ("groq", "openai/gpt-oss-120b"),
+                                             ("openrouter", "openai/gpt-5-mini")])
+def test_other_models_keep_max_tokens_and_temperature(name: str, model: str) -> None:
+    c = client(provider(name, model))
+    _ = c.complete_json(system="s", user="u")
+    kwargs = c._sdk.chat.completions.create.call_args.kwargs
+    assert kwargs["max_tokens"] == 2000 and kwargs["temperature"] == 0.0 and "max_completion_tokens" not in kwargs
+
+
+def test_a_fallback_chain_reports_the_combined_usage() -> None:
+    a = client(response=reply(prompt_tokens=100, completion_tokens=10))
+    b = client(provider("openrouter"), response=reply(prompt_tokens=50, completion_tokens=5))
+    chain = FallbackClient([a, b], ["groq", "openrouter"])
+    _ = a.complete_json(system="s", user="u")
+    _ = b.complete_json(system="s", user="u")
+    assert (chain.usage.calls, chain.usage.total_tokens) == (2, 165)

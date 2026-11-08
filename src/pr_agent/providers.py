@@ -177,3 +177,32 @@ def describe(providers: list[ResolvedProvider]) -> str:
     """A safe one-line summary for logs: names and models, never keys. Marks anything not free."""
     return " -> ".join(
         f"{p.name}:{p.model}" + ("" if p.spec.cost == "free" else f" [{p.spec.cost.upper()}]") for p in providers)
+
+
+# Per-run spending caps. A run is one invocation of the agent. The defaults are far above a
+# normal review and far below an accident, so a bug or a huge PR cannot silently burn a day's
+# free quota or run up a paid bill. Each provider in a chain gets its own cap.
+DEFAULT_MAX_CALLS_PER_RUN = 100
+DEFAULT_MAX_TOKENS_PER_RUN = 200_000
+_UNLIMITED = ("none", "off", "unlimited", "0")
+
+
+def _cap(env: Mapping[str, str], name: str, default: int) -> int | None:
+    raw = _value(env, name).lower()
+    if not raw:
+        return default
+    if raw in _UNLIMITED:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise LLMConfigError(f"{name} must be a whole number, or 'none' for no cap (got {raw!r})") from None
+    if value < 0:
+        raise LLMConfigError(f"{name} cannot be negative (got {value})")
+    return value
+
+
+def run_caps(env: Mapping[str, str]) -> tuple[int | None, int | None]:
+    """(max calls, max tokens) per provider per run, from LLM_MAX_CALLS_PER_RUN / LLM_MAX_TOKENS_PER_RUN."""
+    return (_cap(env, "LLM_MAX_CALLS_PER_RUN", DEFAULT_MAX_CALLS_PER_RUN),
+            _cap(env, "LLM_MAX_TOKENS_PER_RUN", DEFAULT_MAX_TOKENS_PER_RUN))

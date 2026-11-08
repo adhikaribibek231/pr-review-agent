@@ -102,3 +102,10 @@ def test_too_large_prompts_try_the_next_provider_then_surface_for_the_reviewer_t
 def test_a_fallback_needs_at_least_one_client() -> None:
     with pytest.raises(ValueError):
         FallbackClient([])
+
+
+def test_the_fake_client_reports_how_many_calls_it_served() -> None:
+    client = FakeLLMClient()
+    _ = ask(client)
+    _ = ask(client)
+    assert client.usage.calls == 2 and client.usage.total_tokens == 0

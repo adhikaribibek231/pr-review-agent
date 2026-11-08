@@ -25,6 +25,19 @@ from pr_agent.models import Finding, ReviewOutput
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class Usage:
+    """Running totals, so a run (or an evaluation) can report what it cost."""
+
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
 class PromptTooLargeError(Exception):
     """The request cannot fit the provider's per-request limit as it stands.
 
@@ -72,6 +85,10 @@ class FakeLLMClient:
         self._default = default
         self.calls: list[LLMCall] = []
 
+    @property
+    def usage(self) -> Usage:
+        return Usage(calls=len(self.calls))
+
     def complete_json(self, *, system: str, user: str) -> str:
         call = LLMCall(system=system, user=user)
         self.calls.append(call)
@@ -112,6 +129,18 @@ class FallbackClient:
         self._clients = list(clients)
         self._names = list(names) if names else [f"client{i}" for i in range(len(clients))]
         self.last_used: str | None = None
+
+    @property
+    def usage(self) -> Usage:
+        """Combined usage of every provider in the chain."""
+        total = Usage()
+        for client in self._clients:
+            used = getattr(client, "usage", None)
+            if used is not None:
+                total.calls += used.calls
+                total.prompt_tokens += used.prompt_tokens
+                total.completion_tokens += used.completion_tokens
+        return total
 
     def complete_json(self, *, system: str, user: str) -> str:
         last_error: Exception | None = None
