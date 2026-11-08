@@ -1,6 +1,6 @@
 from pr_agent.diff_parser import parse_hunks
 from pr_agent.validator import validate_findings
-from pr_agent.models import Finding
+from pr_agent.models import Category, Finding, Severity
 
 def main()->None:
     patch = '''@@ -33,7 +33,7 @@ def main() -> None:
@@ -18,15 +18,15 @@ def main()->None:
             Finding(
                 filename='main.py',
                 line=36,
-                severity= "error",
-                category= 'type-error',
+                severity=Severity.CRITICAL,
+                category=Category.BUG,
                 message='The annotation does not match the function return type',
                 ),
             Finding(
                 filename='main.py',
                 line=999,
-                severity='warning',
-                category="bug",
+                severity=Severity.WARNING,
+                category=Category.BUG,
                 message="This finding points to a nonexistent changed line",
                 ),
             ]

@@ -1,5 +1,5 @@
 from pr_agent.diff_parser import DiffHunk
-from pr_agent.models import Finding
+from pr_agent.models import Category, Finding, Severity
 from pr_agent.validator import validate_findings
 
 
@@ -14,8 +14,8 @@ def test_valid_added_line_survives() -> None:
     finding = Finding(
         filename="main.py",
         line=36,
-        severity="high",
-        category="correctness",
+        severity=Severity.CRITICAL,
+        category=Category.BUG,
         message="Example issue.",
     )
 
@@ -38,8 +38,8 @@ def test_nonexistent_line_is_removed() -> None:
     finding = Finding(
         filename="main.py",
         line=999,
-        severity="high",
-        category="correctness",
+        severity=Severity.CRITICAL,
+        category=Category.BUG,
         message="This line does not exist in the diff.",
     )
 
@@ -62,8 +62,8 @@ def test_correct_line_in_wrong_file_is_removed() -> None:
     finding = Finding(
         filename="utils.py",
         line=36,
-        severity="medium",
-        category="correctness",
+        severity=Severity.WARNING,
+        category=Category.BUG,
         message="Correct line number, but wrong file.",
     )
 
@@ -95,22 +95,22 @@ def test_multiple_valid_findings_survive() -> None:
         Finding(
             filename="main.py",
             line=36,
-            severity="high",
-            category="correctness",
+            severity=Severity.CRITICAL,
+            category=Category.BUG,
             message="First issue.",
         ),
         Finding(
             filename="main.py",
             line=40,
-            severity="medium",
-            category="maintainability",
+            severity=Severity.WARNING,
+            category=Category.CONVENTION,
             message="Second issue.",
         ),
         Finding(
             filename="utils.py",
             line=15,
-            severity="low",
-            category="style",
+            severity=Severity.INFO,
+            category=Category.STYLE,
             message="Third issue.",
         ),
     ]
@@ -134,24 +134,24 @@ def test_mixed_valid_and_invalid_findings() -> None:
     valid_finding = Finding(
         filename="main.py",
         line=36,
-        severity="high",
-        category="correctness",
+        severity=Severity.CRITICAL,
+        category=Category.BUG,
         message="Valid issue.",
     )
 
     invalid_line = Finding(
         filename="main.py",
         line=999,
-        severity="high",
-        category="correctness",
+        severity=Severity.CRITICAL,
+        category=Category.BUG,
         message="Invalid line.",
     )
 
     invalid_file = Finding(
         filename="utils.py",
         line=36,
-        severity="medium",
-        category="correctness",
+        severity=Severity.WARNING,
+        category=Category.BUG,
         message="Invalid file.",
     )
 
@@ -187,8 +187,8 @@ def test_empty_hunks_rejects_all_findings() -> None:
     finding = Finding(
         filename="main.py",
         line=36,
-        severity="high",
-        category="correctness",
+        severity=Severity.CRITICAL,
+        category=Category.BUG,
         message="Example issue.",
     )
 
@@ -211,8 +211,8 @@ def test_deleted_only_line_is_not_valid_for_right_side_comment() -> None:
     finding = Finding(
         filename="main.py",
         line=36,
-        severity="high",
-        category="correctness",
+        severity=Severity.CRITICAL,
+        category=Category.BUG,
         message="Issue attached only to a deleted line.",
     )
 

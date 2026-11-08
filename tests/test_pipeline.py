@@ -1,6 +1,6 @@
 from unittest.mock import Mock, patch
 
-from pr_agent.models import ChangedFile, Finding
+from pr_agent.models import Category, ChangedFile, Finding, Severity
 from pr_agent.pipeline import (
     aggregate_findings,
     run_review,
@@ -162,29 +162,29 @@ def test_aggregate_findings_sorts_by_filename_then_line_then_severity() -> None:
         Finding(
             filename="b.py",
             line=20,
-            severity="warning",
-            category="bug",
+            severity=Severity.WARNING,
+            category=Category.BUG,
             message="Finding B",
         ),
         Finding(
             filename="a.py",
             line=30,
-            severity="error",
-            category="bug",
+            severity=Severity.CRITICAL,
+            category=Category.BUG,
             message="Finding A30",
         ),
         Finding(
             filename="a.py",
             line=10,
-            severity="info",
-            category="style",
+            severity=Severity.INFO,
+            category=Category.STYLE,
             message="Finding A10",
         ),
         Finding(
             filename="a.py",
             line=30,
-            severity="warning",
-            category="bug",
+            severity=Severity.WARNING,
+            category=Category.BUG,
             message="Finding A30 warning",
         ),
     ]
@@ -195,10 +195,10 @@ def test_aggregate_findings_sorts_by_filename_then_line_then_severity() -> None:
         (finding.filename, finding.line, finding.severity)
         for finding in result
     ] == [
-        ("a.py", 10, "info"),
-        ("a.py", 30, "error"),
-        ("a.py", 30, "warning"),
-        ("b.py", 20, "warning"),
+        ("a.py", 10, Severity.INFO),
+        ("a.py", 30, Severity.CRITICAL),
+        ("a.py", 30, Severity.WARNING),
+        ("b.py", 20, Severity.WARNING),
     ]
 
 
@@ -211,8 +211,8 @@ def test_triage_findings_returns_true_when_findings_exist() -> None:
         Finding(
             filename="main.py",
             line=36,
-            severity="error",
-            category="type-error",
+            severity=Severity.CRITICAL,
+            category=Category.BUG,
             message="Example finding",
         )
     ]
@@ -233,8 +233,8 @@ def test_run_review_hands_hunks_and_retrieved_context_to_the_injected_reviewer()
             Finding(
                 filename="main.py",
                 line=36,
-                severity="error",
-                category="bug",
+                severity=Severity.CRITICAL,
+                category=Category.BUG,
                 message="injected",
             )
         ]

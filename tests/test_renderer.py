@@ -1,4 +1,4 @@
-from pr_agent.models import Finding
+from pr_agent.models import Category, Finding, Severity
 from pr_agent.renderer import render_inline_comment
 
 
@@ -6,28 +6,28 @@ def test_render_inline_comment_contains_severity() -> None:
     finding = Finding(
         filename="main.py",
         line=36,
-        severity="high",
-        category="correctness",
+        severity=Severity.CRITICAL,
+        category=Category.BUG,
         message="The annotation does not match the function return type.",
     )
 
     result = render_inline_comment(finding)
 
-    assert "high" in result.lower()
+    assert "CRITICAL" in result
 
 
 def test_render_inline_comment_contains_category() -> None:
     finding = Finding(
         filename="main.py",
         line=36,
-        severity="high",
-        category="correctness",
+        severity=Severity.CRITICAL,
+        category=Category.BUG,
         message="The annotation does not match the function return type.",
     )
 
     result = render_inline_comment(finding)
 
-    assert "correctness" in result
+    assert "bug" in result
 
 
 def test_render_inline_comment_contains_message() -> None:
@@ -36,8 +36,8 @@ def test_render_inline_comment_contains_message() -> None:
     finding = Finding(
         filename="main.py",
         line=36,
-        severity="high",
-        category="correctness",
+        severity=Severity.CRITICAL,
+        category=Category.BUG,
         message=message,
     )
 
@@ -50,8 +50,8 @@ def test_render_inline_comment_returns_string() -> None:
     finding = Finding(
         filename="main.py",
         line=36,
-        severity="medium",
-        category="type-safety",
+        severity=Severity.WARNING,
+        category=Category.BUG,
         message="Potential type mismatch.",
     )
 
@@ -64,8 +64,8 @@ def test_render_inline_comment_is_not_empty() -> None:
     finding = Finding(
         filename="main.py",
         line=36,
-        severity="low",
-        category="maintainability",
+        severity=Severity.INFO,
+        category=Category.CONVENTION,
         message="Consider simplifying this expression.",
     )
 
@@ -83,11 +83,24 @@ def test_render_inline_comment_preserves_message_text() -> None:
     finding = Finding(
         filename="main.py",
         line=36,
-        severity="high",
-        category="type-safety",
+        severity=Severity.CRITICAL,
+        category=Category.BUG,
         message=message,
     )
 
     result = render_inline_comment(finding)
 
     assert message in result
+
+
+def test_render_inline_comment_has_balanced_bold_markers() -> None:
+    # An unclosed ** makes GitHub bold the rest of the comment. The substring
+    # assertions above can't catch that; counting the markers can.
+    finding = Finding(
+        filename="a.py",
+        line=1,
+        severity=Severity.WARNING,
+        category=Category.SECURITY,
+        message="Something is wrong.",
+    )
+    assert render_inline_comment(finding).count("**") % 2 == 0

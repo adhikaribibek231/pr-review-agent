@@ -3,7 +3,7 @@ from github import Github
 
 from pr_agent.diff_parser import DiffHunk, is_noise_file, parse_hunks
 from pr_agent.github_client import fetch_changed_files, fetch_pull_request, post_review
-from pr_agent.models import ChangedFile, Finding, HunkContext, Reviewer
+from pr_agent.models import Category, ChangedFile, Finding, HunkContext, Reviewer, Severity
 from pr_agent.search import CodeIndex, retrieve_for_hunk
 from pr_agent.validator import validate_findings
 
@@ -39,29 +39,23 @@ def generate_fake_findings(hunks:list[DiffHunk])->list[Finding]:
             Finding(
                 filename="main.py",
                 line=36,
-                severity="error",
-                category="type-error",
+                severity=Severity.CRITICAL,
+                category=Category.BUG,
                 message="The annotation does not match the function return type.",
             ),
             Finding(
                 filename="main.py",
                 line=999,
-                severity="warning",
-                category="bug",
+                severity=Severity.WARNING,
+                category=Category.BUG,
                 message="This finding points to a nonexistent changed line.",
             ),
             ]
     logger.info(f"Generated {len(findings)} findings.")
     return findings
 
-def aggregate_findings(findings: list[Finding])->list[Finding]:
-    severity_rank = {
-            'error':0,
-            'warning':1,
-            'info':2
-            }
-    sorted_findings = sorted(findings, key=lambda x: (x.filename, x.line,severity_rank.get(x.severity,999)))
-    return sorted_findings
+def aggregate_findings(findings: list[Finding]) -> list[Finding]:
+    return sorted(findings, key=lambda f: (f.filename, f.line, f.severity.rank))
 
 def triage_findings(findings:list[Finding])->bool:
     return bool(findings)
