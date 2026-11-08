@@ -120,6 +120,9 @@ class RetrievedContext:
     end_line: int
     content: str
     score: float
+    # Why this chunk was retrieved, e.g. "calls `f`, whose signature changed in this PR".
+    # The reviewer reads it; without it a caller looks like arbitrary code.
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -131,6 +134,9 @@ class HunkContext:
 
     hunk: DiffHunk
     context: tuple[RetrievedContext, ...]
+    # Facts about the retrieval itself that the chunks cannot show: how many dependents
+    # exist, how many were shown, how many the PR already updated, or that none were found.
+    notes: tuple[str, ...] = ()
 
 
 # Anything that turns hunks-with-context into candidate findings: the hardcoded
