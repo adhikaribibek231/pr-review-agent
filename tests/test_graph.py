@@ -7,7 +7,7 @@ import pytest
 
 from pr_agent.checkpointing import memory_checkpointer, sqlite_checkpointer
 from pr_agent.graph import (
-    AGGREGATE, FETCH_PR, PLAN_HUNKS, POST_REVIEW, RETRIEVE, REVIEW, TRIAGE, VALIDATE,
+    AGGREGATE, FETCH_PR, PLAN_HUNKS, POST_REVIEW, RETRIEVE, REVIEW, TRIAGE, VALIDATE, VERIFY,
     build_review_graph, llm_review_step, merge_findings, plain_review_step,
     review_pull_request, thread_id_for,
 )
@@ -19,7 +19,7 @@ from pr_agent.search import Retrieval
 
 CODE = "@@ -1,0 +1,3 @@\n+query = f\"SELECT {uid}\"\n+run(query)\n+done = True"  # added lines 1-3
 COMMENT_ONLY = "@@ -1,0 +1,1 @@\n+# just a note"
-FULL_PATH = [FETCH_PR, PLAN_HUNKS, TRIAGE, RETRIEVE, REVIEW, VALIDATE, AGGREGATE, POST_REVIEW]
+FULL_PATH = [FETCH_PR, PLAN_HUNKS, TRIAGE, RETRIEVE, REVIEW, VALIDATE, VERIFY, AGGREGATE, POST_REVIEW]
 
 
 def finding(line: int, filename: str = "app.py", message: str = "m") -> Finding:
@@ -114,7 +114,7 @@ def test_ungrounded_finding_triggers_exactly_one_stricter_retry(env: Any) -> Non
     ])
     visited, final = run(graph_with(client))
 
-    assert visited == [FETCH_PR, PLAN_HUNKS, TRIAGE, RETRIEVE, REVIEW, VALIDATE, REVIEW, VALIDATE, AGGREGATE, POST_REVIEW]
+    assert visited == [FETCH_PR, PLAN_HUNKS, TRIAGE, RETRIEVE, REVIEW, VALIDATE, REVIEW, VALIDATE, VERIFY, AGGREGATE, POST_REVIEW]
     assert len(client.calls) == 2
     assert "cite ONLY" not in client.calls[0].system
     assert "cite ONLY" in client.calls[1].system  # the retry used the stricter prompt
@@ -365,3 +365,76 @@ def test_changes_supplied_by_the_caller_skip_fetching(env: Any) -> None:
     assert [f.line for f in result["findings"]] == [1]
     env.fetch_pr.assert_not_called()
     env.fetch_files.assert_not_called()
+
+
+# ---- the verification pass ---------------------------------------------------------------------------------------------
+
+
+def verifier_saying(*verdicts: str) -> Any:
+    from pr_agent.symbols import SymbolIndex
+    from pr_agent.verify import Verifier
+
+    replies = [f'{{"verdict": "{v}", "reason": "because of the code shown"}}' for v in verdicts]
+    client = FakeLLMClient(replies)
+    symbols = SymbolIndex()
+    symbols.lines["app.py"] = ["a = 1", "b = 2", "c = 3"]
+    return Verifier(client, symbols), client
+
+
+def test_without_a_verifier_validated_findings_pass_straight_through(env: Any) -> None:
+    _, final = run(graph_with(FakeLLMClient([findings_reply([finding(1)])])))
+    assert [f.line for f in final["verified"]] == [1] and final["refuted"] == []
+
+
+def test_a_refuted_finding_is_dropped_and_explained(env: Any) -> None:
+    verifier, client = verifier_saying("confirmed", "refuted")
+    reviewer = FakeLLMClient([findings_reply([finding(1), finding(2)])])
+    _, final = run(graph_with(reviewer, verifier=verifier))
+
+    assert [f.line for f in final["findings"]] == [1]
+    assert len(client.calls) == 2
+    assert final["refuted"] == ["app.py:2: refuted: because of the code shown"]
+
+
+def test_the_verify_step_runs_after_validation_and_before_aggregation(env: Any) -> None:
+    verifier, _ = verifier_saying("confirmed")
+    visited, _ = run(graph_with(FakeLLMClient([findings_reply([finding(1)])]), verifier=verifier))
+    assert visited.index(VALIDATE) < visited.index(VERIFY) < visited.index(AGGREGATE)
+
+
+def test_the_verifier_is_not_called_when_there_is_nothing_to_verify(env: Any) -> None:
+    verifier, client = verifier_saying()
+    _, final = run(graph_with(FakeLLMClient(), verifier=verifier))  # the reviewer finds nothing
+    assert client.calls == [] and final["verified"] == []
+
+
+def test_hallucinated_lines_are_dropped_before_the_verifier_spends_a_call(env: Any) -> None:
+    verifier, client = verifier_saying("confirmed")
+    reviewer = FakeLLMClient(default=findings_reply([finding(1), finding(99)]))
+    run(graph_with(reviewer, verifier=verifier))
+    assert len(client.calls) == 1  # only the grounded finding was verified
+
+
+def test_a_trivial_pr_never_reaches_the_verifier(env: Any) -> None:
+    env.fetch_files.return_value = [changed(patch=COMMENT_ONLY)]
+    verifier, client = verifier_saying()
+    visited, _ = run(graph_with(FakeLLMClient(), verifier=verifier))
+    assert VERIFY not in visited and client.calls == []
+
+
+def test_the_verifier_receives_the_dependents_that_retrieval_found(env: Any) -> None:
+    from pr_agent.models import RetrievedContext
+    from pr_agent.symbols import SymbolIndex
+    from pr_agent.verify import Verifier
+
+    caller = RetrievedContext("report.py", 1, 3, "from app import compute", 0.5, "imports `compute`, which this PR removed or renamed")
+    similar = RetrievedContext("noise.py", 1, 2, "x = 1", 0.9, "semantically similar to the changed code")
+    symbols = SymbolIndex()
+    symbols.lines["app.py"] = ["a = 1", "b = 2", "c = 3"]
+    verifier_client = FakeLLMClient(['{"verdict": "confirmed", "reason": "r"}'])
+    with patch("pr_agent.pipeline.retrieve", return_value=Retrieval((caller, similar), ("a note",))):
+        graph = build_review_graph(github=Mock(), index=Mock(), verifier=Verifier(verifier_client, symbols),
+                                   review_step=llm_review_step(LLMReviewer(FakeLLMClient([findings_reply([finding(2)])]))))
+        run(graph)
+    sent = verifier_client.calls[0].user
+    assert "from app import compute" in sent and "x = 1" not in sent  # the caller, not the similar code

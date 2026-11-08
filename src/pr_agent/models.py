@@ -29,6 +29,9 @@ class _LenientStrEnum(StrEnum):
         return None
 
 
+LenientStrEnum = _LenientStrEnum  # public name, for enums defined in other modules
+
+
 class Severity(_LenientStrEnum):
     """How much a finding matters. Declared most severe first: that order is
     what `rank` (and therefore sorting) is built on, so don't reorder casually."""

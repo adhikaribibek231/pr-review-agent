@@ -54,8 +54,9 @@ def deps(github: Mock | None = None, client: Any = None, **overrides: Any) -> De
     )
 
 
-def run(argv: list[str], d: Dependencies | None = None, env: dict[str, str] | None = None) -> int:
-    return main(["review", "--repo", "o/r", *argv], env=ENV if env is None else env, deps=d or deps())
+def run(argv: list[str], d: Dependencies | None = None, env: dict[str, str] | None = None, verify: bool = False) -> int:
+    extra = [] if verify else ["--no-verify"]  # most tests are about everything else: keep them to one model call
+    return main(["review", "--repo", "o/r", *argv, *extra], env=ENV if env is None else env, deps=d or deps())
 
 
 # ---- the normal path -------------------------------------------------------------------------------------------
@@ -281,3 +282,62 @@ def test_rerunning_the_same_commit_with_a_checkpoint_reuses_the_result(tmp_path:
 
     assert len(client.calls) == 1  # no second model call
     github.get_repo.return_value.get_pull.return_value.create_review.assert_called_once()  # and no second review
+
+
+# ---- the verification pass --------------------------------------------------------------------------------------------------------
+
+
+def verdict(kind: str) -> str:
+    return f'{{"verdict": "{kind}", "reason": "the callee creates the directory first"}}'
+
+
+def test_verification_is_on_by_default_and_drops_a_refuted_finding(capsys: pytest.CaptureFixture[str]) -> None:
+    client = FakeLLMClient([findings_reply([finding()]), verdict("refuted")])
+    assert run(["--pr", "1"], deps(client=client), verify=True) == 0
+    out = capsys.readouterr().out
+    assert "No findings." in out and "verification rejected 1 finding(s):" in out
+    assert "refuted: the callee creates the directory first" in out
+    assert len(client.calls) == 2
+
+
+def test_a_confirmed_finding_is_reported(capsys: pytest.CaptureFixture[str]) -> None:
+    client = FakeLLMClient([findings_reply([finding()]), verdict("confirmed")])
+    assert run(["--pr", "1"], deps(client=client), verify=True) == 0
+    out = capsys.readouterr().out
+    assert "app.py:3" in out and "verification rejected" not in out
+
+
+def test_no_verify_skips_the_second_pass() -> None:
+    client = FakeLLMClient([findings_reply([finding()])])
+    _ = run(["--pr", "1"], deps(client=client))
+    assert len(client.calls) == 1
+
+
+def test_verification_needs_the_index_so_no_retrieval_means_no_verification() -> None:
+    client = FakeLLMClient([findings_reply([finding()])])
+    _ = run(["--pr", "1", "--no-retrieval"], deps(client=client), verify=True)
+    assert len(client.calls) == 1
+
+
+def test_the_verifier_gets_its_own_cheap_client() -> None:
+    options: list[dict[str, Any]] = []
+
+    def factory(env: dict[str, str], **kw: Any) -> FakeLLMClient:
+        options.append(kw)
+        return FakeLLMClient([findings_reply([finding()]), verdict("confirmed")])
+
+    _ = run(["--pr", "1"], deps(client_factory=factory), verify=True)
+    assert options[0]["reasoning_effort"] == "medium" and options[1] == {"reasoning_effort": "low", "max_tokens": 800}
+
+
+def test_the_report_counts_the_verification_calls_in_the_usage(capsys: pytest.CaptureFixture[str]) -> None:
+    clients = [FakeLLMClient([findings_reply([finding()])]), FakeLLMClient([verdict("confirmed")])]
+    _ = run(["--pr", "1"], deps(client_factory=lambda env, **kw: clients.pop(0)), verify=True)
+    assert "usage: 2 model call(s)" in capsys.readouterr().out
+
+
+def test_json_output_lists_what_verification_rejected(capsys: pytest.CaptureFixture[str]) -> None:
+    client = FakeLLMClient([findings_reply([finding()]), verdict("refuted")])
+    _ = run(["--pr", "1", "--json"], deps(client=client), verify=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["findings"] == [] and data["refuted_by_verification"][0].startswith("app.py:3: refuted")

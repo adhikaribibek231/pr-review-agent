@@ -53,7 +53,7 @@ def render_hunk_with_line_numbers(hunk: DiffHunk) -> str:
     return "\n".join(rendered)
 
 
-_TAG_CLOSERS = re.compile(r"</(diff|context)", re.IGNORECASE)
+_TAG_CLOSERS = re.compile(r"</(diff|context|code|impact_notes)", re.IGNORECASE)
 
 
 def _neutralize(text: str) -> str:

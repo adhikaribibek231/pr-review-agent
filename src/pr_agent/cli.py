@@ -36,6 +36,7 @@ from pr_agent.retriever import discover_python_files
 from pr_agent.reviewer import LLMReviewer
 from pr_agent.search import CodeIndex, build_index
 from pr_agent.snapshot import fetch_snapshot
+from pr_agent.verify import Verifier
 
 logger = logging.getLogger("pr_agent")
 
@@ -73,6 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="index this local checkout instead of downloading the head commit")
     review.add_argument("--no-retrieval", action="store_true",
                         help="skip indexing: faster and cheaper, but the reviewer sees only the diff")
+    review.add_argument("--no-verify", action="store_true",
+                        help="skip the verification pass that re-checks each finding against the code it depends on")
     review.add_argument("--provider", help="use only this provider (overrides LLM_PROVIDER)")
     review.add_argument("--model", help="model id for --provider (overrides its *_MODEL variable)")
     review.add_argument("--effort", default="medium", choices=["low", "medium", "high"],
@@ -162,6 +165,9 @@ def render_report(state: Mapping[str, Any], source: Source, usage: Any, provider
                       f"      {f.message}"]
     else:
         lines.append("No findings.")
+    refuted: list[str] = list(state.get("refuted", []))
+    if refuted:
+        lines += ["", f"verification rejected {len(refuted)} finding(s):"] + [f"  {why}" for why in refuted]
     lines += ["", f"usage: {usage.calls} model call(s), {usage.total_tokens} tokens "
                   f"({usage.prompt_tokens} prompt + {usage.completion_tokens} reply), {seconds:.0f}s"]
     if post_requested:
@@ -177,6 +183,7 @@ def _report_json(state: Mapping[str, Any], source: Source, usage: Any, providers
         "hunks": len(state.get("hunks", [])), "reviewed": len(state.get("reviewable", [])),
         "skipped_trivial": state.get("skipped_trivial", 0), "review_passes": state.get("attempts", 0),
         "findings": [f.model_dump(mode="json") for f in state.get("findings", [])],
+        "refuted_by_verification": list(state.get("refuted", [])),
         "posted": state.get("posted", False), "post_mode": state.get("post_mode"),
         "usage": {"calls": usage.calls, "prompt_tokens": usage.prompt_tokens,
                   "completion_tokens": usage.completion_tokens},
@@ -230,11 +237,18 @@ def run_review(args: argparse.Namespace, env: Mapping[str, str], deps: Dependenc
 
         client = deps.client_factory(llm_env, reasoning_effort=args.effort, max_tokens=args.reply_tokens)
         reviewer = LLMReviewer(client, max_context_chars=args.context_chars)
+        # The verifier re-reads the code each finding depends on, so it needs the index. Its replies
+        # are one short verdict, so it reserves little and thinks little.
+        verify_client = None
+        verifier = None
+        if index is not None and not args.no_verify:
+            verify_client = deps.client_factory(llm_env, reasoning_effort="low", max_tokens=800)
+            verifier = Verifier(verify_client, index.symbols)
         checkpoint: AbstractContextManager[Any] = (
             sqlite_checkpointer(args.checkpoint) if args.checkpoint else nullcontext(None))
         with checkpoint as saver:
             graph = build_review_graph(github=source.github, review_step=llm_review_step(reviewer), index=index,
-                                       post_requested=args.post, checkpointer=saver)
+                                       post_requested=args.post, checkpointer=saver, verifier=verifier)
             if source.is_pull_request:
                 state = review_pull_request(graph, args.repo, args.pr, thread_id_for(args.repo, args.pr, source.head_sha))
             else:
@@ -242,7 +256,12 @@ def run_review(args: argparse.Namespace, env: Mapping[str, str], deps: Dependenc
                                             supplied={"changed_files": source.changed_files})
 
     seconds = time.perf_counter() - started
-    usage = getattr(client, "usage", None) or Usage()
+    usage = Usage()
+    for used in (getattr(c, "usage", None) for c in (client, verify_client) if c is not None):
+        if used is not None and used is not usage:
+            usage.calls += used.calls
+            usage.prompt_tokens += used.prompt_tokens
+            usage.completion_tokens += used.completion_tokens
     if args.json:
         print(_report_json(state, source, usage, providers, seconds))
     else:

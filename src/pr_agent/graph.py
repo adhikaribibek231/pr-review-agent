@@ -33,12 +33,14 @@ from pr_agent.reviewer import LLMReviewer
 from pr_agent.search import CodeIndex
 from pr_agent.triage import triage_hunks
 from pr_agent.validator import check_findings
+from pr_agent.verify import Verifier, dependents_by_file
 
 DEFAULT_MAX_RETRIES = 1
 
 # Node names, as constants so the wiring and the tests can't drift apart by typo.
 FETCH_PR, PLAN_HUNKS, TRIAGE, RETRIEVE = "fetch_pr", "plan_hunks", "triage", "retrieve"
-REVIEW, VALIDATE, AGGREGATE, POST_REVIEW = "review", "validate", "aggregate", "post_review"
+REVIEW, VALIDATE, VERIFY = "review", "validate", "verify"
+AGGREGATE, POST_REVIEW = "aggregate", "post_review"
 
 # What a review pass looks like to the graph: (hunks with context, stricter?) -> findings.
 ReviewStep = Callable[[list[HunkContext], bool], list[Finding]]
@@ -93,6 +95,8 @@ class ReviewState(TypedDict, total=False):
     candidates: list[Finding]  # the latest review pass's raw output (overwritten each pass)
     dropped: list[Finding]  # the latest validation's rejects (overwritten each pass)
     validated: Annotated[list[Finding], merge_findings]  # grounded findings, accumulated
+    verified: list[Finding]  # those that survived the verification pass (all, if it is switched off)
+    refuted: list[str]  # "file:line: why" for each finding the verifier rejected
     # aggregate / post_review
     findings: list[Finding]  # final: deduplicated and sorted. A separate field because a
     # reducer-managed field is append-only and could not be re-ordered.
@@ -113,6 +117,7 @@ def build_review_graph(
     post_requested: bool = False,
     max_retries: int = DEFAULT_MAX_RETRIES,
     checkpointer: Any = None,
+    verifier: Verifier | None = None,
 ) -> Any:
     """Wire the nodes and edges and compile. Dependencies come in as arguments.
 
@@ -155,8 +160,18 @@ def build_review_graph(
         result = check_findings(state["candidates"], state["hunks"])
         return {"validated": list(result.kept), "dropped": list(result.dropped)}
 
+    def verify(state: ReviewState) -> dict[str, Any]:
+        validated = state.get("validated", [])
+        if verifier is None or not validated:
+            return {"verified": list(validated), "refuted": []}
+        result = verifier.verify(validated, dependents_by_file(state.get("items", [])))
+        return {
+            "verified": list(result.kept),
+            "refuted": [f"{f.filename}:{f.line}: {why}" for f, why in result.rejected],
+        }
+
     def aggregate(state: ReviewState) -> dict[str, Any]:
-        return {"findings": aggregate_findings(state.get("validated", []))}
+        return {"findings": aggregate_findings(state.get("verified", state.get("validated", [])))}
 
     def post_review(state: ReviewState) -> dict[str, Any]:
         findings = state.get("findings", [])
@@ -186,7 +201,8 @@ def build_review_graph(
     graph = StateGraph(ReviewState)
     for name, node in [
         (FETCH_PR, fetch_pr), (PLAN_HUNKS, plan_hunks), (TRIAGE, triage), (RETRIEVE, retrieve),
-        (REVIEW, review), (VALIDATE, validate), (AGGREGATE, aggregate), (POST_REVIEW, post_review),
+        (REVIEW, review), (VALIDATE, validate), (VERIFY, verify), (AGGREGATE, aggregate),
+        (POST_REVIEW, post_review),
     ]:
         graph.add_node(name, node)
 
@@ -196,7 +212,8 @@ def build_review_graph(
     graph.add_conditional_edges(TRIAGE, route_after_triage, {"review_path": RETRIEVE, "skip": AGGREGATE})
     graph.add_edge(RETRIEVE, REVIEW)
     graph.add_edge(REVIEW, VALIDATE)
-    graph.add_conditional_edges(VALIDATE, route_after_validate, {"retry": REVIEW, "done": AGGREGATE})
+    graph.add_conditional_edges(VALIDATE, route_after_validate, {"retry": REVIEW, "done": VERIFY})
+    graph.add_edge(VERIFY, AGGREGATE)
     graph.add_edge(AGGREGATE, POST_REVIEW)
     graph.add_edge(POST_REVIEW, END)
     return graph.compile(checkpointer=checkpointer)
