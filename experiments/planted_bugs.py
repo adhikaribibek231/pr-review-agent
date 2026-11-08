@@ -173,4 +173,169 @@ CASES: list[Case] = [
                 return conn.execute("SELECT * FROM users WHERE name = ?", (name,)).fetchall()
          '''},
          description="a correctly parameterised query: expect NO findings"),
+
+    # ---- harder bugs (subtler, closer to real review work) -----------------------------------
+    Case("mutable_default_argument",
+         before={"tags.py": "def normalize(tag):\n    return tag.strip().lower()\n"},
+         after={"tags.py": '''
+            def normalize(tag):
+                return tag.strip().lower()
+
+            def add_tag(tag, tags=[]):
+                tags.append(normalize(tag))
+                return tags
+         '''},
+         bug_file="tags.py", bug_text="def add_tag(tag, tags=[])",
+         description="the default list is shared between calls"),
+    Case("identity_comparison_on_string",
+         before={"orders.py": "def total(o):\n    return o.amount\n"},
+         after={"orders.py": '''
+            def total(o):
+                return o.amount
+
+            def is_active(order):
+                if order.status is "active":
+                    return True
+                return False
+         '''},
+         bug_file="orders.py", bug_text='order.status is "active"',
+         description="`is` compares identity, not equality"),
+    Case("swallowed_exception",
+         before={"store.py": "def load(path):\n    return open(path).read()\n"},
+         after={"store.py": '''
+            def load(path):
+                return open(path).read()
+
+            def save(record, db):
+                try:
+                    db.insert(record)
+                except Exception:
+                    pass
+         '''},
+         bug_file="store.py", bug_text="except Exception:",
+         description="a failed insert is silently discarded"),
+    Case("shell_injection",
+         before={"images.py": "import subprocess\n"},
+         after={"images.py": '''
+            import subprocess
+
+            def convert(filename):
+                subprocess.run(f"convert {filename} out.png", shell=True)
+         '''},
+         bug_file="images.py", bug_text="shell=True",
+         description="a filename is interpolated into a shell command"),
+    Case("weak_password_hash",
+         before={"auth.py": "import hashlib\n"},
+         after={"auth.py": '''
+            import hashlib
+
+            def hash_password(password):
+                return hashlib.md5(password.encode()).hexdigest()
+         '''},
+         bug_file="auth.py", bug_text="hashlib.md5(password",
+         description="MD5 is unsuitable for storing passwords"),
+    Case("unsafe_deserialization",
+         before={"api.py": "import json\n"},
+         after={"api.py": '''
+            import json
+            import pickle
+
+            def parse(request_body):
+                return pickle.loads(request_body)
+         '''},
+         bug_file="api.py", bug_text="pickle.loads(request_body)",
+         description="unpickling data from a request allows code execution"),
+    Case("path_traversal",
+         before={"files.py": "import os\n\nUPLOAD_DIR = '/srv/uploads'\n"},
+         after={"files.py": '''
+            import os
+
+            UPLOAD_DIR = '/srv/uploads'
+
+            def read_upload(filename):
+                with open(os.path.join(UPLOAD_DIR, filename)) as handle:
+                    return handle.read()
+         '''},
+         bug_file="files.py", bug_text="os.path.join(UPLOAD_DIR, filename)",
+         description="a user-supplied filename can escape the upload directory with .."),
+    Case("always_true_condition",
+         before={"perm.py": "def is_staff(user):\n    return user.staff\n"},
+         after={"perm.py": '''
+            def is_staff(user):
+                return user.staff
+
+            def can_delete(user):
+                if user.role == "admin" or "superuser":
+                    return True
+                return False
+         '''},
+         bug_file="perm.py", bug_text='user.role == "admin" or "superuser"',
+         description="operator precedence makes the check always true: everyone may delete"),
+    Case("missing_await",
+         before={"users.py": "async def fetch_user(uid):\n    return await db.get(uid)\n"},
+         after={"users.py": "async def fetch_user(uid):\n    return await db.get(uid)\n",
+                "handler.py": '''
+            from users import fetch_user
+
+            async def handler(uid):
+                result = fetch_user(uid)
+                return result.name
+         '''},
+         bug_file="handler.py", bug_text="result = fetch_user(uid)",
+         description="a coroutine is used without being awaited"),
+    # ---- impact: the bug is in code the PR did not touch ------------------------------------------
+    Case("forgotten_caller_after_rename",
+         before={"tax.py": "def compute_tax(amount):\n    return amount * 0.13\n",
+                 "invoice.py": "from tax import compute_tax\n\ndef invoice_total(amount):\n    return amount + compute_tax(amount)\n",
+                 "report.py": "from tax import compute_tax\n\ndef report_tax(amounts):\n    return sum(compute_tax(a) for a in amounts)\n"},
+         after={"tax.py": "def calculate_tax(amount):\n    return amount * 0.13\n",
+                "invoice.py": "from tax import calculate_tax\n\ndef invoice_total(amount):\n    return amount + calculate_tax(amount)\n",
+                "report.py": "from tax import compute_tax\n\ndef report_tax(amounts):\n    return sum(compute_tax(a) for a in amounts)\n"},
+         bug_file="tax.py", bug_text="def calculate_tax(amount)",
+         description="renamed; invoice.py was updated but report.py (untouched by the PR) still imports the old name"),
+    Case("field_added_constructor_caller",
+         before={"model.py": "from dataclasses import dataclass\n\n@dataclass\nclass Order:\n    id: int\n    total: float\n",
+                 "build.py": "from model import Order\n\ndef make():\n    return Order(1, 9.5)\n"},
+         after={"model.py": "from dataclasses import dataclass\n\n@dataclass\nclass Order:\n    id: int\n    total: float\n    currency: str\n",
+                "build.py": "from model import Order\n\ndef make():\n    return Order(1, 9.5)\n"},
+         bug_file="model.py", bug_text="currency: str",
+         description="a required field was added; build.py (untouched) still constructs Order with two arguments"),
+    Case("removed_function_still_used",
+         before={"utils.py": "def keep(x):\n    return x\n\n\ndef legacy_total(items):\n    return sum(items)\n\n\ndef other(x):\n    return x\n",
+                 "report.py": "from utils import legacy_total\n\ndef report(items):\n    return legacy_total(items)\n"},
+         after={"utils.py": "def keep(x):\n    return x\n\n\ndef other(x):\n    return x\n",
+                "report.py": "from utils import legacy_total\n\ndef report(items):\n    return legacy_total(items)\n"},
+         bug_file="utils.py", bug_text="def other(x)",
+         description="a function was deleted but report.py (untouched) still imports it; the diff has no added line to attach a comment to"),
+    # ---- more clean changes: a good reviewer stays silent -------------------------------------------
+    Case("clean_type_hints_only",
+         before={"geo.py": "def area(w, h):\n    return w * h\n"},
+         after={"geo.py": "def area(w: float, h: float) -> float:\n    return w * h\n"},
+         description="annotations added, behaviour identical: expect NO findings"),
+    Case("clean_safe_subprocess",
+         before={"images.py": "import subprocess\n"},
+         after={"images.py": '''
+            import subprocess
+
+            def convert(filename):
+                subprocess.run(["convert", filename, "out.png"], check=True)
+         '''},
+         description="argument list, no shell: expect NO findings"),
+    Case("clean_mutable_default_fixed",
+         before={"tags.py": "def add_tag(tag, tags=[]):\n    tags.append(tag)\n    return tags\n"},
+         after={"tags.py": "def add_tag(tag, tags=None):\n    if tags is None:\n        tags = []\n    tags.append(tag)\n    return tags\n"},
+         description="the classic bug being FIXED: expect NO findings"),
+    Case("clean_context_manager",
+         before={"io_utils.py": "def read(path):\n    f = open(path)\n    data = f.read()\n    f.close()\n    return data\n"},
+         after={"io_utils.py": "def read(path):\n    with open(path) as handle:\n        return handle.read()\n"},
+         description="a correct simplification: expect NO findings"),
+    Case("clean_new_tests",
+         before={"calc.py": "def add(a, b):\n    return a + b\n"},
+         after={"calc.py": "def add(a, b):\n    return a + b\n",
+                "tests/test_calc.py": "from calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n\ndef test_add_negative():\n    assert add(-1, 1) == 0\n"},
+         description="only tests added: expect NO findings"),
+    Case("clean_rename_local_variable",
+         before={"stats.py": "def mean(xs):\n    t = sum(xs)\n    return t / len(xs) if xs else 0.0\n"},
+         after={"stats.py": "def mean(xs):\n    total = sum(xs)\n    return total / len(xs) if xs else 0.0\n"},
+         description="a local variable renamed, empty input still handled: expect NO findings"),
 ]

@@ -34,6 +34,7 @@ from pr_agent.reviewer import LLMReviewer  # noqa: E402
 from pr_agent.search import build_index  # noqa: E402
 from pr_agent.triage import triage_hunks  # noqa: E402
 from pr_agent.validator import check_findings  # noqa: E402
+from pr_agent.verify import Verifier, dependents_by_file  # noqa: E402
 
 
 def prepare(case: Case, embedder: SentenceTransformerEmbedder):
@@ -43,7 +44,7 @@ def prepare(case: Case, embedder: SentenceTransformerEmbedder):
         hunks = hunks_of(case)
         index = build_index(root, embedder)
         reviewable = list(triage_hunks(hunks).reviewable)
-        return hunks, gather_context(reviewable, index, all_hunks=hunks)
+        return hunks, gather_context(reviewable, index, all_hunks=hunks), index.symbols
 
 
 def main() -> None:
@@ -56,6 +57,8 @@ def main() -> None:
     _ = parser.add_argument("--max-tokens", type=int, default=45_000, help="hard cap on tokens actually used")
     _ = parser.add_argument("--max-calls", type=int, default=24)
     _ = parser.add_argument("--cases", default="", help="comma-separated case names; default all")
+    _ = parser.add_argument("--verify", action="store_true",
+                            help="also run the verification pass; reports results before AND after it")
     _ = parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -68,12 +71,12 @@ def main() -> None:
         total = 0
         print(f"{'case':<36}{'hunks':>6}{'~prompt tokens':>16}")
         for case in chosen:
-            _, items = prepared[case.name]
+            _, items, _ = prepared[case.name]
             tokens = sum(estimate_tokens(p.system) + estimate_tokens(p.user)
                          for p in (build_review_prompt(i, max_context_chars=args.context_chars) for i in items))
             total += tokens
             print(f"{case.name:<36}{len(items):>6}{tokens:>16}")
-        calls = sum(len(prepared[c.name][1]) for c in chosen)
+        calls = sum(len({i.hunk.filename for i in prepared[c.name][1]}) for c in chosen)
         print(f"\ntotal: {calls} calls, ~{total} prompt tokens (conservative estimate), "
               f"plus up to {args.reply_tokens} reply tokens each = ~{total + calls * 1000} realistic.")
         print("Groq free tier: 8000 tokens/minute, so paced runs take at least "
@@ -85,50 +88,71 @@ def main() -> None:
     env["LLM_PROVIDER"] = args.provider
     if args.model:
         env[spec.model_env] = args.model
-    client = make_client(env, reasoning_effort=args.effort, max_tokens=args.reply_tokens,
-                         max_calls=args.max_calls, max_total_tokens=args.max_tokens)
+    caps = {"max_calls": args.max_calls, "max_total_tokens": args.max_tokens}
+    client = make_client(env, reasoning_effort=args.effort, max_tokens=args.reply_tokens, **caps)
+    verify_client = make_client(env, reasoning_effort="low", max_tokens=800, **caps) if args.verify else None
     reviewer = LLMReviewer(client, max_context_chars=args.context_chars)  # type: ignore[arg-type]
 
-    tp = fn = fp = ungrounded = 0
-    clean_fp = clean_cases = 0
+    def score(case: Case, findings: list[Finding]) -> tuple[bool | None, int]:
+        """(hit?, extra findings). hit is None for a clean case."""
+        line = case.bug_line()
+        if case.clean:
+            return None, len(findings)
+        near = lambda f: f.filename == case.bug_file and abs(f.line - (line or 0)) <= 1  # noqa: E731
+        return any(near(f) for f in findings), sum(1 for f in findings if not near(f))
+
+    totals = {"pre": [0, 0, 0], "post": [0, 0, 0]}  # hits, extras (false positives), misses
+    clean_flagged = {"pre": 0, "post": 0}
+    clean_cases = ungrounded = 0
     started = time.perf_counter()
     print(f"provider={args.provider} model={getattr(client, 'model', '?')} effort={args.effort} "
-          f"reply_tokens={args.reply_tokens} context_chars={args.context_chars}\n")
+          f"verify={args.verify} reply_tokens={args.reply_tokens} context_chars={args.context_chars}\n")
     try:
         for case in chosen:
-            hunks, items = prepared[case.name]
-            before_calls = client.usage.calls  # type: ignore[attr-defined]
-            findings: list[Finding] = reviewer(items)
-            result = check_findings(findings, hunks)
-            bug_line = case.bug_line()
-            if case.clean:
-                clean_cases += 1
-                clean_fp += len(result.kept) > 0
-                fp += len(result.kept)
-                verdict = "OK (silent)" if not result.kept else f"FALSE POSITIVE x{len(result.kept)}"
-            else:
-                hit = any(f.filename == case.bug_file and abs(f.line - (bug_line or 0)) <= 1 for f in result.kept)
-                tp += hit
-                fn += not hit
-                extra = [f for f in result.kept if not (f.filename == case.bug_file and abs(f.line - (bug_line or 0)) <= 1)]
-                fp += len(extra)
-                verdict = ("HIT" if hit else "MISSED") + (f" +{len(extra)} extra" if extra else "")
+            hunks, items, symbols = prepared[case.name]
+            before = client.usage.calls  # type: ignore[attr-defined]
+            result = check_findings(reviewer(items), hunks)
+            pre = list(result.kept)
+            post, rejected = pre, ()
+            if verify_client is not None and pre:
+                outcome = Verifier(verify_client, symbols).verify(pre, dependents_by_file(items))  # type: ignore[arg-type]
+                post, rejected = list(outcome.kept), outcome.rejected
             ungrounded += len(result.dropped)
-            retries = client.usage.calls - before_calls - len(items)  # type: ignore[attr-defined]
-            print(f"{case.name:<36}{verdict:<24}calls={client.usage.calls - before_calls}"  # type: ignore[attr-defined]
-                  f"{' (retry)' if retries > 0 else ''}  ungrounded={len(result.dropped)}")
-            for f in result.kept:
-                print(f"      {f.filename}:{f.line} [{f.severity.value}/{f.category.value}] {f.message[:150]}")
-            for f in result.dropped:
-                print(f"      DROPPED {f.filename}:{f.line} {f.message[:100]}")
+            clean_cases += case.clean
+            cells = []
+            for stage, found in (("pre", pre), ("post", post)):
+                hit, extra = score(case, found)
+                totals[stage][1] += extra
+                if case.clean:
+                    clean_flagged[stage] += extra > 0
+                else:
+                    totals[stage][0] += bool(hit)
+                    totals[stage][2] += not hit
+                cells.append("OK" if (hit is None and not extra) else "FP x%d" % extra if hit is None
+                             else ("HIT" if hit else "MISS") + (f"+{extra}fp" if extra else ""))
+            shown = cells[0] if not args.verify else f"{cells[0]} -> {cells[1]}"
+            print(f"{case.name:<38}{shown:<24}calls={client.usage.calls - before}  ungrounded={len(result.dropped)}")  # type: ignore[attr-defined]
+            for f in pre:
+                mark = "REJECTED" if any(f == r[0] for r in rejected) else "kept    "
+                print(f"      {mark if args.verify else '        '} {f.filename}:{f.line} [{f.severity.value}] {f.message[:140]}")
+            for f, why in rejected:
+                print(f"           verifier: {why[:150]}")
     except BudgetExceededError as error:
         print(f"\nSTOPPED by budget cap: {error}")
+    except Exception as error:  # noqa: BLE001 - e.g. the provider's daily quota: keep the partial result
+        print(f"\nSTOPPED by a provider error: {type(error).__name__}: {str(error)[:200]}")
 
-    bugs = tp + fn
+    stages = ["pre", "post"] if args.verify else ["pre"]
+    for stage in stages:
+        hits, fps, misses = totals[stage]
+        label = "after verification" if stage == "post" else ("before verification" if args.verify else "result")
+        print(f"\n{label}: bugs found {hits}/{hits + misses}   false positives {fps} "
+              f"(clean cases flagged: {clean_flagged[stage]}/{clean_cases})")
     usage = client.usage  # type: ignore[attr-defined]
-    print(f"\nbugs found {tp}/{bugs}   false positives {fp} (clean cases with findings: {clean_fp}/{clean_cases})   "
-          f"ungrounded {ungrounded}")
-    print(f"calls={usage.calls}  tokens={usage.total_tokens} (prompt {usage.prompt_tokens} + reply {usage.completion_tokens})  "
+    extra_usage = verify_client.usage if verify_client is not None else None  # type: ignore[attr-defined]
+    total_tokens = usage.total_tokens + (extra_usage.total_tokens if extra_usage else 0)
+    total_calls = usage.calls + (extra_usage.calls if extra_usage else 0)
+    print(f"ungrounded (dropped by the validator) {ungrounded}   calls={total_calls}  tokens={total_tokens}  "
           f"time={time.perf_counter() - started:.0f}s")
 
 
