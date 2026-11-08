@@ -192,7 +192,7 @@ Working and tested (`pytest`):
 - Heuristic triage that skips hunks that cannot change behaviour (comments, imports, reformatting) without spending a model call
 - AST-based chunking, with a **token-budget guarantee**: no chunk is ever silently truncated by the embedding model
 - Semantic search (`pr_agent.search`): `build_index` once, `index.search(query)` many times
-- PR-aware retrieval: `retrieve_for_hunk` combines exact definition lookup for names the change uses with semantic search, and excludes the changed code itself
+- Change-impact retrieval: static analysis finds code the PR did *not* touch that its change could break (callers, instantiations, subclasses, overrides, dangling references to removed names), separates callers the PR already updated from stale ones, ranks and caps them, and tells the reviewer why each is shown. Semantic search and definition lookup fill the rest. See [docs/retrieval_scenarios.md](docs/retrieval_scenarios.md) for every scenario covered and every known limit
 - `Severity`/`Category` enums and a Pydantic `Finding`/`ReviewOutput`: LLM output is validated at the boundary, with the JSON schema generated from the same models
 - `LLMReviewer`: builds the prompt (numbered diff lines, retrieved context, untrusted-data rules), validates the reply, retries once with the error attached; talks to the model only through the `LLMClient` protocol
 - A LangGraph agent (`pr_agent.graph`) with the triage-skip and validate-retry decisions, a bounded retry governor, and SQLite checkpointing that resumes after a crash and makes re-running a commit a no-op. See [docs/architecture.md](docs/architecture.md)

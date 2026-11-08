@@ -76,6 +76,16 @@ the key. `review_pull_request` looks at the thread's status first:
 | interrupted | resumes at the node that failed | finished nodes are not repeated |
 | finished | returns the saved result | re-running the same commit never re-reviews or double-posts |
 
+## What the reviewer is shown (`retrieve` node)
+
+For each hunk, in priority order: **dependents** (code outside the diff that the change could
+break, from `symbols.py` + `impact.py`), then **definitions** the changed code calls, then
+**semantically similar** code. Every chunk carries a `reason`, and each hunk carries `notes`
+(how many dependents exist, how many were shown, how many the PR already updated, or that none
+were found). The prompt tells the model to report a broken caller **on the changed line**,
+because the validator only accepts findings on added lines. The full scenario matrix, with what
+is covered and what is not, is in [retrieval_scenarios.md](retrieval_scenarios.md).
+
 ## Where this deliberately differs from the field manual
 
 1. **Reducer.** The manual puts `operator.add` on `findings` and has `validate` return the filtered
