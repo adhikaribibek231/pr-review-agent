@@ -280,3 +280,28 @@ def test_aggregate_findings_removes_exact_duplicates() -> None:
     one = Finding(filename="a.py", line=1, severity=Severity.WARNING, category=Category.BUG, message="same")
     other = Finding(filename="a.py", line=1, severity=Severity.WARNING, category=Category.BUG, message="different")
     assert aggregate_findings([one, one, other]) == [one, other]
+
+
+# ---- only source code is reviewed ------------------------------------------------------------------------------------
+
+
+def _hunks_for(*names: str) -> list[str]:
+    from pr_agent.pipeline import build_hunks
+
+    files = [ChangedFile(n, "modified", 1, 0, "@@ -1,0 +1,1 @@\n+x = 1") for n in names]
+    return [h.filename for h in build_hunks(files)]
+
+
+def test_source_files_are_reviewed_in_any_supported_language() -> None:
+    names = ["a.py", "web/app.ts", "web/app.TSX", "cmd/main.go", "lib.rs", "run.sh", "q.sql"]
+    assert _hunks_for(*names) == names
+
+
+def test_prose_data_and_binaries_are_not_reviewed() -> None:
+    skipped = ["README.md", "notes.txt", "data.json", "config.yaml", "logo.png", "paper.pdf", "poetry.lock",
+               "Makefile", "Dockerfile", "outputs/draft.md", ".gitignore", "weird."]
+    assert _hunks_for(*skipped) == []
+
+
+def test_only_the_last_extension_counts() -> None:
+    assert _hunks_for("archive.py.md", "template.html.py") == ["template.html.py"]

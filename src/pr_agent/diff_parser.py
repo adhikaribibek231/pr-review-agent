@@ -15,6 +15,16 @@ NOISE_FILENAMES = {
     "yarn.lock",
     "pnpm-lock.yaml",
 }
+# Files worth a code review. Prose, data and binaries are not: asked to review a README the model
+# invents rules ("lines should be under 120 characters") and the findings are all noise, while
+# every hunk still costs a model call. Python gets impact analysis; the other languages are
+# reviewed from the diff and similar code alone.
+REVIEWABLE_EXTENSIONS = frozenset({
+    ".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".go", ".rs", ".java", ".kt", ".scala",
+    ".rb", ".php", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".sh", ".bash", ".sql", ".lua",
+})
+
+
 @dataclass(frozen=True)
 class DiffHunk:
     filename: str
@@ -98,6 +108,12 @@ def parse_hunks(filename:str, patch:str | None)->list[DiffHunk]:
                 )
     logger.info("Parsed %d hunks", len(parsed_hunks))
     return parsed_hunks
+
+def is_reviewable_file(filename: str) -> bool:
+    """Is this a source-code file (by extension) rather than prose, data, or a binary?"""
+    basename = filename.rsplit("/", maxsplit=1)[-1]
+    return "." in basename and "." + basename.rsplit(".", maxsplit=1)[-1].lower() in REVIEWABLE_EXTENSIONS
+
 
 def is_noise_file(filename:str)->bool:
     basename = filename.rsplit("/", maxsplit=1)[-1]

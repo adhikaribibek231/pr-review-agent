@@ -556,3 +556,15 @@ def test_imports_under_type_checking_and_try_blocks_are_followed(tmp_path: Path)
     after = {**before, "lib.py": "def work(x, y):\n    return x + y\n"}
     out = analyze(tmp_path, before, after)
     assert "guarded.py" in out.files  # `work = None` is a fallback, not a different `work`
+
+
+def test_a_body_change_to_main_does_not_report_the_scripts_own_entry_line(tmp_path: Path) -> None:
+    before = {"run.py": "def main():\n    a = 1\n    b = 2\n    c = 3\n    d = 4\n    print(a)\n\n\nif __name__ == '__main__':\n    main()\n"}
+    after = {"run.py": before["run.py"].replace("print(a)", "print(a + d)")}
+    assert not analyze(tmp_path, before, after).files
+
+
+def test_a_module_level_caller_in_another_file_is_still_reported(tmp_path: Path) -> None:
+    before = {"lib.py": "def work():\n    return 1\n", "script.py": "from lib import work\n\nwork()\n"}
+    after = {**before, "lib.py": "def work():\n    return 2\n"}
+    assert "script.py" in analyze(tmp_path, before, after).files

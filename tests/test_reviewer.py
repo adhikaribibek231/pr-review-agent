@@ -231,3 +231,70 @@ def test_a_prompt_that_fits_is_sent_once_with_all_its_context() -> None:
     client = TooBigUnless(limit=1_000_000)
     _ = LLMReviewer(client)([big_item()])
     assert len(client.sizes) == 1
+
+
+# ---- one call per file -------------------------------------------------------------------------------------------------
+
+
+def hunk_item(filename: str, patch: str) -> HunkContext:
+    return HunkContext(parse_hunks(filename, patch)[0], ())
+
+
+def added(n: int, start: int = 1, tag: str = "x") -> str:
+    return f"@@ -{start - 1},0 +{start},{n} @@\n" + "\n".join(f"+{tag}{i} = {i}" for i in range(n))
+
+
+def test_all_hunks_of_one_file_are_reviewed_in_a_single_call() -> None:
+    from pr_agent.reviewer import group_into_batches
+
+    items = [hunk_item("a.py", added(2, 1, "p")), hunk_item("a.py", added(2, 40, "q"))]
+    assert [len(b) for b in group_into_batches(items)] == [2]
+    client = FakeLLMClient()
+    _ = LLMReviewer(client)(items)
+    assert len(client.calls) == 1
+    user = client.calls[0].user
+    assert user.count("<diff file=\"a.py\">") == 2 and "p0 = 0" in user and "q0 = 0" in user
+
+
+def test_a_single_prompt_carries_one_copy_of_the_instructions_for_the_whole_batch() -> None:
+    client = FakeLLMClient()
+    _ = LLMReviewer(client)([hunk_item("a.py", added(1, 1)), hunk_item("a.py", added(1, 30))])
+    assert client.calls[0].system.count("JSON Schema") == 1
+
+
+def test_different_files_get_separate_calls_in_order_of_first_appearance() -> None:
+    from pr_agent.reviewer import group_into_batches
+
+    items = [hunk_item("a.py", added(1)), hunk_item("b.py", added(1)), hunk_item("a.py", added(1, 30))]
+    batches = group_into_batches(items)
+    assert [[i.hunk.filename for i in b] for b in batches] == [["a.py", "a.py"], ["b.py"]]  # non-adjacent a.py hunks grouped
+
+
+def test_a_file_with_large_diffs_is_split_into_several_calls() -> None:
+    from pr_agent.reviewer import MAX_BATCH_DIFF_CHARS, group_into_batches
+
+    big = added(MAX_BATCH_DIFF_CHARS // 20, 1)  # each patch is about a third of the limit... times a few
+    items = [hunk_item("a.py", big.replace("+x", f"+h{k}_")) for k in range(6)]
+    batches = group_into_batches(items)
+    assert len(batches) > 1
+    for batch in batches[:-1]:
+        assert sum(len(i.hunk.patch) for i in batch) <= MAX_BATCH_DIFF_CHARS or len(batch) == 1
+
+
+def test_the_number_of_hunks_per_call_is_capped() -> None:
+    from pr_agent.reviewer import MAX_BATCH_HUNKS, group_into_batches
+
+    items = [hunk_item("a.py", added(1, 10 * k + 1, f"v{k}_")) for k in range(MAX_BATCH_HUNKS + 3)]
+    assert [len(b) for b in group_into_batches(items)] == [MAX_BATCH_HUNKS, 3]
+
+
+def test_findings_from_a_batch_can_cite_any_hunk_in_it() -> None:
+    items = [hunk_item("a.py", added(2, 1)), hunk_item("a.py", added(2, 40))]
+    client = FakeLLMClient([findings_reply([finding(1, "a.py"), finding(41, "a.py")])])
+    assert [f.line for f in LLMReviewer(client)(items)] == [1, 41]
+
+
+def test_an_empty_list_of_items_makes_no_calls() -> None:
+    from pr_agent.reviewer import group_into_batches
+
+    assert group_into_batches([]) == []

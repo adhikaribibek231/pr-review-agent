@@ -357,6 +357,10 @@ def analyze_impact(symbols: SymbolIndex, hunk: DiffHunk, pr_hunks: list[DiffHunk
         for dependent in _dependents(symbols, symbol):
             if _inside_symbol(symbols, symbol, dependent):
                 continue
+            if symbol.change == "body" and dependent.file == symbol.file and dependent.enclosing is None:
+                # A behaviour change to `main()` is not news to the `if __name__ == "__main__": main()`
+                # line a few rows below it: that is script plumbing, not a dependent that can break.
+                continue
             site = (dependent.file, dependent.enclosing)
             if dependent.line in pr_lines.get(dependent.file, frozenset()):
                 touched_sites.add(site)  # this PR already edited it: probably updated

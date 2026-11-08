@@ -19,6 +19,10 @@ from pr_agent.prompts import MAX_CONTEXT_CHARS, Prompt, build_review_prompt
 
 logger = logging.getLogger(__name__)
 
+# One call covers every hunk of a file, up to these limits; a bigger file takes several calls.
+MAX_BATCH_DIFF_CHARS = 5_000
+MAX_BATCH_HUNKS = 8
+
 _FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
 _MAX_ECHOED_REPLY_CHARS = 2_000
 
@@ -73,6 +77,30 @@ def _repair_request(original_user_prompt: str, bad_reply: str, error: Validation
     )
 
 
+def group_into_batches(items: list[HunkContext]) -> list[list[HunkContext]]:
+    """Group hunks by file, in order of first appearance, splitting a file whose diffs are large.
+
+    Reviewing a file's hunks together fixes two problems of reviewing each alone: the fixed
+    instructions are paid once per file instead of once per hunk, and the model can see that
+    a variable one hunk adds is used by another hunk (it otherwise reports it as unused).
+    """
+    by_file: dict[str, list[HunkContext]] = {}
+    for item in items:
+        by_file.setdefault(item.hunk.filename, []).append(item)
+    batches: list[list[HunkContext]] = []
+    for file_items in by_file.values():
+        current: list[HunkContext] = []
+        size = 0
+        for item in file_items:
+            if current and (size + len(item.hunk.patch) > MAX_BATCH_DIFF_CHARS or len(current) >= MAX_BATCH_HUNKS):
+                batches.append(current)
+                current, size = [], 0
+            current.append(item)
+            size += len(item.hunk.patch)
+        batches.append(current)
+    return batches
+
+
 class LLMReviewer:
     def __init__(self, client: LLMClient, max_attempts: int = 2,
                  max_context_chars: int = MAX_CONTEXT_CHARS) -> None:
@@ -88,7 +116,7 @@ class LLMReviewer:
         return self.review(items)
 
     def review(self, items: list[HunkContext], stricter: bool = False) -> list[Finding]:
-        """Review each hunk independently and concatenate the findings.
+        """Review the hunks, one call per file (see `group_into_batches`), and concatenate the findings.
 
         `stricter` selects the tightened prompt for the validate->review retry
         edge. Client exceptions (rate limits, network) are deliberately NOT
@@ -96,22 +124,23 @@ class LLMReviewer:
         clean review for a hunk we never reviewed would be worse than failing.
         """
         findings: list[Finding] = []
-        for item in items:
-            findings.extend(self._review_hunk(item, stricter))
+        for batch in group_into_batches(items):
+            findings.extend(self._review_batch(batch, stricter))
         return findings
 
-    def _review_hunk(self, item: HunkContext, stricter: bool) -> list[Finding]:
+    def _review_batch(self, batch: list[HunkContext], stricter: bool) -> list[Finding]:
+        item = batch[0]  # for log messages: every item in a batch is from the same file
         # If the provider says the prompt is too large, retry with half the context, then a
         # quarter, then none: a review with less context beats no review. This is separate
         # from the invalid-reply retry below, which is about the model's answer.
         budget = self._max_context_chars
         while True:
-            prompt = build_review_prompt(item, stricter=stricter, max_context_chars=budget)
+            prompt = build_review_prompt(batch, stricter=stricter, max_context_chars=budget)
             try:
                 return self._ask(item, prompt)
             except PromptTooLargeError as error:
                 if budget == 0:
-                    logger.warning("Giving up on a hunk in %s: too large even without context (%s)",
+                    logger.warning("Giving up on a batch in %s: too large even without context (%s)",
                                    item.hunk.filename, error)
                     return []
                 budget = budget // 2 if budget >= 500 else 0
@@ -130,5 +159,5 @@ class LLMReviewer:
                     item.hunk.filename, attempt, self._max_attempts, describe_validation_error(error),
                 )
                 user = _repair_request(prompt.user, raw, error)
-        logger.warning("Giving up on a hunk in %s: no valid reply", item.hunk.filename)
+        logger.warning("Giving up on a batch in %s: no valid reply", item.hunk.filename)
         return []

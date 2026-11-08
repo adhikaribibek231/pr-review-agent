@@ -1,7 +1,7 @@
 import logging
 from github import Github
 
-from pr_agent.diff_parser import DiffHunk, is_noise_file, parse_hunks
+from pr_agent.diff_parser import DiffHunk, is_noise_file, is_reviewable_file, parse_hunks
 from pr_agent.github_client import fetch_changed_files, fetch_pull_request, post_review
 from pr_agent.models import Category, ChangedFile, Finding, HunkContext, Reviewer, Severity
 from pr_agent.search import CodeIndex, retrieve
@@ -33,6 +33,9 @@ def build_hunks(changed_files:list[ChangedFile])->list[DiffHunk]:
     for changed_file in changed_files:
         if is_noise_file(changed_file.filename):
             logger.info(f"Skipping noise file: {changed_file.filename}")
+            continue
+        if not is_reviewable_file(changed_file.filename):
+            logger.info("Skipping non-code file: %s", changed_file.filename)
             continue
 
         all_hunks.extend(
