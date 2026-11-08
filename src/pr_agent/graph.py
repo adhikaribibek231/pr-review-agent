@@ -97,6 +97,7 @@ class ReviewState(TypedDict, total=False):
     findings: list[Finding]  # final: deduplicated and sorted. A separate field because a
     # reducer-managed field is append-only and could not be re-ordered.
     posted: bool
+    post_mode: str  # inline | summary-only | skipped-duplicate | nothing-to-post
 
 
 # --------------------------------------------------------------------------
@@ -122,6 +123,8 @@ def build_review_graph(
     # ---- nodes -----------------------------------------------------------
 
     def fetch_pr(state: ReviewState) -> dict[str, Any]:
+        if "changed_files" in state:
+            return {}  # supplied by the caller, e.g. a review of a past commit: nothing to fetch
         pull_request = fetch_pull_request(github, state["repo"], state["pr_number"])
         return {"changed_files": fetch_changed_files(pull_request)}
 
@@ -162,8 +165,8 @@ def build_review_graph(
         # Re-fetched rather than kept in state: a PullRequest object can't be
         # checkpointed, and a resumed process wouldn't have it anyway.
         pull_request = fetch_pull_request(github, state["repo"], state["pr_number"])
-        post_review_to_github(pull_request, findings)
-        return {"posted": True}
+        result = post_review_to_github(pull_request, findings)
+        return {"posted": result.posted, "post_mode": result.mode}
 
     # ---- the two decisions -----------------------------------------------
 
@@ -215,7 +218,8 @@ def thread_id_for(repo: str, pr_number: int, head_sha: str) -> str:
     return f"{repo}#{pr_number}@{head_sha}"
 
 
-def review_pull_request(graph: Any, repo: str, pr_number: int, thread_id: str) -> ReviewState:
+def review_pull_request(graph: Any, repo: str, pr_number: int, thread_id: str,
+                        supplied: dict[str, Any] | None = None) -> ReviewState:
     """Run the graph for one PR, honouring what the checkpointer already knows.
 
     The thread's status decides what happens:
@@ -230,12 +234,13 @@ def review_pull_request(graph: Any, repo: str, pr_number: int, thread_id: str) -
     the previous run), so the retry logic misfires.
     """
     config = {"configurable": {"thread_id": thread_id}}
+    initial = {"repo": repo, "pr_number": pr_number, **(supplied or {})}
     if graph.checkpointer is None:
-        return graph.invoke({"repo": repo, "pr_number": pr_number}, config)
+        return graph.invoke(initial, config)
 
     snapshot = graph.get_state(config)
     if snapshot.values and not snapshot.next:
         return snapshot.values  # finished: cached
     if snapshot.next:
         return graph.invoke(None, config)  # interrupted: resume
-    return graph.invoke({"repo": repo, "pr_number": pr_number}, config)
+    return graph.invoke(initial, config)

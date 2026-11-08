@@ -11,6 +11,7 @@ from pr_agent.graph import (
     build_review_graph, llm_review_step, merge_findings, plain_review_step,
     review_pull_request, thread_id_for,
 )
+from pr_agent.github_client import PublishResult
 from pr_agent.llm import FakeLLMClient, findings_reply
 from pr_agent.models import Category, ChangedFile, Finding, RetrievedContext, Severity
 from pr_agent.reviewer import LLMReviewer
@@ -38,6 +39,7 @@ def env() -> Any:
         patch("pr_agent.graph.fetch_changed_files") as fetch_files,
         patch("pr_agent.graph.post_review_to_github") as post,
     ):
+        post.return_value = PublishResult("inline")
         fetch_files.return_value = [changed()]
         yield SimpleNamespace(fetch_pr=fetch_pr, fetch_files=fetch_files, post=post)
 
@@ -342,3 +344,24 @@ def test_state_survives_a_process_restart_with_sqlite(env: Any, tmp_path: Any) -
 
     assert [f.line for f in result["findings"]] == [2]
     assert env.fetch_files.call_count == 1  # the fetch happened before the crash, never again
+
+
+def test_the_post_mode_is_recorded_in_the_state(env: Any) -> None:
+    env.post.return_value = PublishResult("summary-only")
+    _, final = run(graph_with(FakeLLMClient([findings_reply([finding(1)])]), post_requested=True))
+    assert final["posted"] is True and final["post_mode"] == "summary-only"
+
+
+def test_a_duplicate_review_is_reported_as_not_posted(env: Any) -> None:
+    env.post.return_value = PublishResult("skipped-duplicate")
+    _, final = run(graph_with(FakeLLMClient([findings_reply([finding(1)])]), post_requested=True))
+    assert final["posted"] is False and final["post_mode"] == "skipped-duplicate"
+
+
+def test_changes_supplied_by_the_caller_skip_fetching(env: Any) -> None:
+    """Reviewing a past commit has no pull request: the files come in through the input."""
+    graph = graph_with(FakeLLMClient([findings_reply([finding(1)])]))
+    result = review_pull_request(graph, "o/r", 0, "commit-abc", supplied={"changed_files": [changed()]})
+    assert [f.line for f in result["findings"]] == [1]
+    env.fetch_pr.assert_not_called()
+    env.fetch_files.assert_not_called()
